@@ -8,7 +8,43 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import type { User } from '@shared/schema';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'rutiini-secret-key';
+/**
+ * Signing key for session tokens.
+ *
+ * This previously fell back to a hardcoded literal when JWT_SECRET was unset.
+ * Anyone who knew that string could mint a valid token for any user id and read
+ * any daycare's children, so a deployment that simply forgot the environment
+ * variable was silently unauthenticated. Production now refuses to start instead.
+ *
+ * Outside production a random key is generated per process, so development and
+ * tests need no configuration; restarting invalidates previously issued tokens,
+ * which is the correct trade-off there.
+ */
+const JWT_SECRET: string = (() => {
+  const configured = process.env.JWT_SECRET;
+
+  if (process.env.NODE_ENV === 'production') {
+    if (!configured || configured.trim().length === 0) {
+      throw new Error(
+        'JWT_SECRET must be set in production. Generate one with: openssl rand -base64 48'
+      );
+    }
+    if (configured === 'rutiini-secret-key') {
+      throw new Error(
+        'JWT_SECRET is still the old built-in default and is publicly known. ' +
+        'Generate a new one with: openssl rand -base64 48'
+      );
+    }
+    if (configured.length < 32) {
+      throw new Error('JWT_SECRET must be at least 32 characters. Generate one with: openssl rand -base64 48');
+    }
+    return configured;
+  }
+
+  return configured && configured.trim().length > 0
+    ? configured
+    : crypto.randomBytes(48).toString('base64');
+})();
 const BCRYPT_ROUNDS = 10;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
