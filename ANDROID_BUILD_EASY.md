@@ -5,7 +5,7 @@
 **This is the easiest way to build your signed Android app bundle.**
 
 ### Step 1: Download Project
-1. Go to Replit
+1. Clone the repository
 2. Click **...** (three dots) on Files → "Download as zip"
 3. Extract to folder (e.g., `C:\Rutiini`)
 

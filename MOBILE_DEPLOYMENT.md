@@ -18,9 +18,9 @@ This guide explains how to build and publish Rutiini to the Apple App Store and 
 
 ## ANDROID BUILD - Step by Step
 
-### Step 1: Download Project from Replit
+### Step 1: Get the Project
 
-1. In Replit, click the three dots menu (...) in the Files panel
+1. Clone the repository: `git clone https://github.com/cryptoaigent/Rutiini.com.git`
 2. Click "Download as zip"
 3. Extract the zip to a folder (e.g., `C:\Users\YourName\Downloads\Rutiini`)
 

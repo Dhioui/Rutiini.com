@@ -588,7 +588,7 @@ Response:
 - Frontend: React SPA (Vite)
 - Backend: Express.js (Node.js)
 - Database: PostgreSQL (Neon)
-- Hosting: Replit (development) → Production TBD
+- Hosting: host-independent (Docker / any Node 20+ environment) — see README.md
 - Mobile: Capacitor (iOS/Android)
 
 ### Scalability Considerations

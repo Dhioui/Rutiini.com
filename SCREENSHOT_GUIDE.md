@@ -4,7 +4,7 @@ You're calling daycares - let's make this FAST! ⚡
 
 ## Quick Setup (2 minutes)
 
-1. **Open your Rutiini app** (running on localhost:5000 in Replit)
+1. **Open your Rutiini app** (`npm run dev`, then http://localhost:5000)
 2. **Use Chrome DevTools** to simulate different screen sizes
 3. **Take screenshots** using Windows/Mac built-in tools
 4. **Upload to Google Play**

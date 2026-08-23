@@ -6,14 +6,14 @@ A signed Android app bundle (.aab file) for Google Play Store submission.
 ## Requirements
 - ✅ Android Studio installed (you have it)
 - ✅ Node.js installed
-- ✅ This project downloaded from Replit
+- ✅ A local clone of this repository
 
 ---
 
 ## FASTEST METHOD - Windows (3 clicks!)
 
 ### Step 1: Download
-- Go to Replit → Click **...** on Files → Click "Download as zip"
+- Clone the repository: `git clone https://github.com/cryptoaigent/Rutiini.com.git`
 - Extract it (right-click → "Extract All")
 
 ### Step 2: Open Folder

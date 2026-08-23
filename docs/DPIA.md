@@ -307,7 +307,7 @@ This DPIA shall be reviewed:
 - **Database:** PostgreSQL (Neon hosted)
 - **ORM:** Drizzle ORM
 - **Mobile:** Capacitor (iOS/Android)
-- **Hosting:** Replit
+- **Hosting:** Self-hosted or container platform of the controller's choosing (EU region); see README.md
 
 ### Appendix B: Data Flow Diagram
 ```

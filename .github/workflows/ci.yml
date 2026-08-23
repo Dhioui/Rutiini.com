@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck, tests and build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
+      # The suite covers authentication, authorisation, validation, query shaping
+      # and translation completeness, and needs no database.
+      - name: Tests
+        run: npx vitest run
+
+      - name: Build
+        run: npm run build
+
+  schema:
+    name: Schema applies to a real PostgreSQL
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rutiini
+          POSTGRES_PASSWORD: rutiini
+          POSTGRES_DB: rutiini
+        options: >-
+          --health-cmd "pg_isready -U rutiini"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    env:
+      DATABASE_URL: postgres://rutiini:rutiini@localhost:5432/rutiini
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # Catches a schema change that typechecks but will not apply, and proves the
+      # indexes the API depends on are actually created.
+      - name: Apply schema
+        run: npm run db:push -- --force
+
+      - name: Verify indexes exist
+        run: |
+          count=$(psql "$DATABASE_URL" -tAc \
+            "SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname LIKE '%\_idx';")
+          echo "Indexes created: $count"
+          if [ "$count" -lt 60 ]; then
+            echo "::error::Expected at least 60 performance indexes, found $count"
+            exit 1
+          fi
+
+      # The seed is the demo path; a broken one gets found by a prospect, not by us.
+      - name: Seed demo data
+        run: npx tsx server/seed.ts
+
+      - name: Build
+        run: npm run build
+
+      # Smoke test against the production build: the server must start, serve the
+      # login screen's municipality list, and accept every seeded role. This is
+      # what a prospect does in the first two minutes of a demo.
+      - name: Smoke test the production build
+        env:
+          JWT_SECRET: ci-secret-long-enough-to-pass-the-production-check
+          NODE_ENV: production
+          PORT: '5000'
+        run: |
+          set -euo pipefail
+          node dist/index.js &
+          server_pid=$!
+          trap 'kill $server_pid 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 2 http://localhost:5000/api/health >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://localhost:5000/api/health
+
+          municipalities=$(curl -fsS http://localhost:5000/api/public/municipalities)
+          echo "Municipalities: $municipalities"
+          case "$municipalities" in
+            *Helsinki*) ;;
+            *) echo "::error::Login screen would show no municipalities"; exit 1 ;;
+          esac
+
+          sign_in() {
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -X POST "http://localhost:5000/api/auth/login/$1" \
+              -H 'Content-Type: application/json' \
+              -d "{\"email\":\"$2\",\"password\":\"password123\",\"daycareCode\":\"aurinko\"}")
+            echo "  $1 -> HTTP $code"
+            [ "$code" = "200" ] || { echo "::error::$1 could not sign in"; exit 1; }
+          }
+          sign_in daycareleader admin@aurinko.fi
+          sign_in staff maria@aurinko.fi
+          sign_in guardian anna@example.fi
