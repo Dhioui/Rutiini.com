@@ -5,6 +5,12 @@ server/public
 vite.config.ts.*
 *.tar.gz
 
+# Environment files hold the database URL and JWT_SECRET. Only the annotated
+# template is tracked; anything with real values stays local.
+.env
+.env.*
+!.env.example
+
 # Never commit local signing keys or machine-specific Android settings.
 **/keystore.properties
 **/local.properties
@@ -12,3 +18,7 @@ vite.config.ts.*
 **/*.keystore
 **/*.pem
 **/*.key
+
+# Test and coverage output
+coverage
+*.log

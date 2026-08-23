@@ -1,5 +1,5 @@
 import { db } from './db';
-import { daycares, users, children, guardians, entries, trips, tripResponses } from '@shared/schema';
+import { municipalities, daycares, users, children, guardians, entries, trips, tripResponses } from '@shared/schema';
 import bcrypt from 'bcryptjs';
 
 async function seed() {
@@ -7,15 +7,28 @@ async function seed() {
 
   const hashedPassword = await bcrypt.hash('password123', 10);
 
+  // The login screen asks for a municipality before a daycare, so seeding daycares
+  // without one left the picker empty and made the seeded data unusable.
+  const [municipality] = await db.insert(municipalities).values({
+    name: 'Helsinki',
+    code: 'HEL',
+  }).returning();
+
+  console.log(`✅ Created municipality: ${municipality.name} (${municipality.code})`);
+
   // Create two daycares
   const [daycare1] = await db.insert(daycares).values({
     name: 'Aurinko Päiväkoti',
     code: 'aurinko',
+    municipalityId: municipality.id,
+    municipality: municipality.name,
   }).returning();
 
   const [daycare2] = await db.insert(daycares).values({
     name: 'Sateenkaari Päiväkoti',
     code: 'sateenkaari',
+    municipalityId: municipality.id,
+    municipality: municipality.name,
   }).returning();
 
   console.log(`✅ Created daycares: ${daycare1.name} (${daycare1.code}), ${daycare2.name} (${daycare2.code})`);
@@ -36,7 +49,7 @@ async function seed() {
     name: 'Admin User',
     email: 'admin@aurinko.fi',
     passwordHash: hashedPassword,
-    role: 'admin',
+    role: 'daycareleader',
     daycareId: daycare1.id,
   }).returning();
 
@@ -147,7 +160,7 @@ async function seed() {
     name: 'Tiina Laine',
     email: 'admin@sateenkaari.fi',
     passwordHash: hashedPassword,
-    role: 'admin',
+    role: 'daycareleader',
     daycareId: daycare2.id,
   }).returning();
 
@@ -224,13 +237,13 @@ async function seed() {
   console.log('\n👑 Super Admin:');
   console.log('   Email: superadmin@roolit.fi / admin123');
   console.log('\n🏫 Aurinko Päiväkoti (code: aurinko):');
-  console.log('   Admin: admin@aurinko.fi / password123');
-  console.log('   Staff: maria@aurinko.fi / password123');
-  console.log('   Guardian: anna@example.fi / password123');
+  console.log('   Daycare leader: admin@aurinko.fi / password123  (role: daycareleader)');
+  console.log('   Staff: maria@aurinko.fi / password123  (role: staff)');
+  console.log('   Guardian: anna@example.fi / password123  (role: guardian)');
   console.log('\n🏫 Sateenkaari Päiväkoti (code: sateenkaari):');
-  console.log('   Admin: admin@sateenkaari.fi / password123');
-  console.log('   Staff: jukka@sateenkaari.fi / password123');
-  console.log('   Guardian: laura@test.fi / password123');
+  console.log('   Daycare leader: admin@sateenkaari.fi / password123  (role: daycareleader)');
+  console.log('   Staff: jukka@sateenkaari.fi / password123  (role: staff)');
+  console.log('   Guardian: laura@test.fi / password123  (role: guardian)');
 }
 
 seed()

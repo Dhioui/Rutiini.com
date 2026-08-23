@@ -20,10 +20,18 @@ export function log(message: string, source = "express") {
 }
 
 export async function setupVite(app: Express, server: Server) {
+  // Vite's host check protects the dev server against DNS rebinding. It used to be
+  // disabled outright so the Replit preview domain would work; now that the project
+  // is host-agnostic, set DEV_ALLOWED_HOSTS (comma-separated) when developing behind
+  // a tunnel or proxy, and leave it unset for normal local work. Dev server only --
+  // production serves pre-built static files and never reaches this code.
+  const allowedHostsEnv = process.env.DEV_ALLOWED_HOSTS?.trim();
   const serverOptions = {
     middlewareMode: true,
     hmr: { server },
-    allowedHosts: true as const,
+    ...(allowedHostsEnv
+      ? { allowedHosts: allowedHostsEnv.split(',').map((h) => h.trim()).filter(Boolean) }
+      : {}),
   };
 
   const vite = await createViteServer({

@@ -1,9 +1,9 @@
-import { Pool, neonConfig } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-serverless';
+import { Pool as NeonPool, neonConfig } from '@neondatabase/serverless';
+import { drizzle as drizzleNeon } from 'drizzle-orm/neon-serverless';
+import { Pool as PgPool } from 'pg';
+import { drizzle as drizzlePg } from 'drizzle-orm/node-postgres';
 import ws from "ws";
 import * as schema from "@shared/schema";
-
-neonConfig.webSocketConstructor = ws;
 
 if (!process.env.DATABASE_URL) {
   throw new Error(
@@ -11,14 +11,54 @@ if (!process.env.DATABASE_URL) {
   );
 }
 
-export const pool = new Pool({ 
-  connectionString: process.env.DATABASE_URL,
-  max: 20,
+const DATABASE_URL = process.env.DATABASE_URL;
+
+const POOL_SETTINGS = {
+  max: Number.parseInt(process.env.DATABASE_POOL_MAX ?? '20', 10),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
-});
+};
 
-export const db = drizzle({ client: pool, schema });
+/**
+ * Pick the database driver.
+ *
+ * Neon's serverless driver talks to Neon over a WebSocket and cannot connect to an
+ * ordinary PostgreSQL server, so hardcoding it meant the application could only ever
+ * run against Neon. A municipality that requires the data in its own infrastructure,
+ * a self-hosted deployment and the local development database all need plain
+ * PostgreSQL over TCP.
+ *
+ * The host in DATABASE_URL decides, which is right in every normal case. Set
+ * DATABASE_DRIVER to 'neon' or 'postgres' to override it.
+ */
+function selectDriver(url: string): 'neon' | 'postgres' {
+  const override = process.env.DATABASE_DRIVER?.trim().toLowerCase();
+  if (override === 'neon' || override === 'postgres') return override;
+  if (override) {
+    throw new Error(`DATABASE_DRIVER must be 'neon' or 'postgres', got '${override}'`);
+  }
+
+  try {
+    const host = new URL(url).hostname;
+    return host.endsWith('.neon.tech') ? 'neon' : 'postgres';
+  } catch {
+    throw new Error('DATABASE_URL is not a valid connection URL');
+  }
+}
+
+export const databaseDriver = selectDriver(DATABASE_URL);
+
+/**
+ * Both pools expose the parts used here -- query(), connect() and release() -- so
+ * withAdvisoryLock and Drizzle work the same either way.
+ */
+export const pool = databaseDriver === 'neon'
+  ? (neonConfig.webSocketConstructor = ws, new NeonPool({ connectionString: DATABASE_URL, ...POOL_SETTINGS }))
+  : new PgPool({ connectionString: DATABASE_URL, ...POOL_SETTINGS });
+
+export const db = databaseDriver === 'neon'
+  ? drizzleNeon({ client: pool as NeonPool, schema })
+  : drizzlePg({ client: pool as PgPool, schema });
 
 /**
  * Run `fn` only if no other instance is already running the job identified by `key`.
@@ -35,8 +75,17 @@ export const db = drizzle({ client: pool, schema });
  *
  * Returns true if the job ran here, false if another instance held the lock.
  */
+/**
+ * The subset of a pooled client this function needs. Both drivers provide it, but
+ * their overload signatures differ enough that the union cannot be called directly.
+ */
+interface LockClient {
+  query(text: string, values: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
+  release(): void;
+}
+
 export async function withAdvisoryLock(key: number, fn: () => Promise<void>): Promise<boolean> {
-  const client = await pool.connect();
+  const client = (await pool.connect()) as unknown as LockClient;
   let acquired = false;
   try {
     const result = await client.query('SELECT pg_try_advisory_lock($1) AS locked', [key]);

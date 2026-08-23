@@ -1,0 +1,51 @@
+# Rutiini -- application plus its database.
+#
+# Brings up a complete, self-contained deployment: no managed database and no
+# external service required. Suitable for evaluation, for a pilot, and as the
+# starting point for a municipality that hosts the system itself.
+#
+#   cp .env.example .env         # then set JWT_SECRET
+#   docker compose up -d
+#   docker compose exec app npm run db:push     # create the schema, once
+#   docker compose exec app npx tsx server/seed.ts   # optional demo data
+#
+# The app reaches Postgres over the compose network, so DATABASE_URL below
+# overrides whatever is in .env.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rutiini}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-rutiini}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rutiini} -d ${POSTGRES_DB:-rutiini}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not published to the host by default: the database is reachable only from
+    # the app container. Uncomment to connect with psql from your machine.
+    # ports:
+    #   - "5432:5432"
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      DATABASE_URL: postgres://${POSTGRES_USER:-rutiini}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-rutiini}
+    ports:
+      - "${APP_PORT:-5000}:5000"
+
+volumes:
+  db-data:

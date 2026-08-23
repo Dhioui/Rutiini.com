@@ -1,7 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import cors from "cors";
-import rateLimit from "express-rate-limit";
 import compression from "compression";
 import cron from "node-cron";
 import { registerRoutes } from "./routes";
@@ -9,6 +8,12 @@ import { setupVite, serveStatic, log } from "./vite";
 import { fetchAndSaveMenu, fetchAndSaveMenuForDaycare } from "./menuScraper";
 import { storage } from "./storage";
 import { withAdvisoryLock, LOCK_KEYS } from "./db";
+import {
+  apiLimiter,
+  authLimiter,
+  passwordResetLimiter,
+  publicApiLimiter,
+} from "./rateLimit";
 
 const app = express();
 
@@ -49,45 +54,11 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Rate limiting - scaled for high traffic (200k users)
-const limiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute window
-  max: 300, // 300 requests per minute per IP
-  message: { error: 'Too many requests, please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  validate: { xForwardedForHeader: false },
-});
-
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // 10 login attempts per 15 min per IP
-  skipSuccessfulRequests: true, // Don't count successful logins
-  message: { error: 'Too many login attempts, please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-const passwordResetLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 3, // 3 reset requests per hour per IP
-  message: { error: 'Too many password reset attempts, please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-const publicApiLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute
-  max: 60, // 60 requests per minute for public APIs
-  message: { error: 'Too many requests, please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
 
 app.use('/api/public', publicApiLimiter);
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/reset-password', passwordResetLimiter);
-app.use('/api', limiter);
+app.use('/api', apiLimiter);
 
 declare module 'http' {
   interface IncomingMessage {

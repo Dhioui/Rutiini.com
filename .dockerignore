@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.github
+android
+ios
+coverage
+*.log
+.env
+.env.*
+!.env.example
+**/*.jks
+**/*.keystore
+**/*.pem
+**/*.key
