@@ -250,7 +250,7 @@ export default function AuditLogsPage() {
                         )}
                       </div>
                       <div className="text-xs text-muted-foreground mt-1">
-                        {t('role')}: {log.actorRole}
+                        {t('role')}: {t(log.actorRole, { defaultValue: log.actorRole })}
                         {log.daycareId && ` | ${t('daycare')}: #${log.daycareId}`}
                       </div>
                     </div>

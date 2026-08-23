@@ -111,10 +111,13 @@ export function EntriesPage() {
   const canCreateEntry = user?.role === 'daycareleader' || user?.role === 'staff' || user?.role === 'super_admin';
 
   if (!canCreateEntry) {
+    // t('error') renders as a bare "Virhe", which reads as a malfunction rather
+    // than a page this role is not entitled to. Guardians land here from the
+    // dashboard, so the distinction matters.
     return (
       <div className="flex flex-col items-center justify-center py-12">
         <ClipboardList className="h-12 w-12 text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">{t('error')}</p>
+        <p className="text-muted-foreground">{t('accessDenied')}</p>
       </div>
     );
   }

@@ -2,7 +2,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "@/contexts/AuthContext";
@@ -20,6 +20,17 @@ export default function ChangePasswordPage() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const redirectPathRef = useRef('/dashboard');
+  const [changeSucceeded, setChangeSucceeded] = useState(false);
+
+  // App.tsx redirects every route back here while needsPasswordChange is true, so
+  // navigating in the mutation handler raced that guard: the flag was still true
+  // when the router evaluated it and bounced the user straight back to this page.
+  // Waiting for the cleared flag to reach React makes the hand-off deterministic.
+  useEffect(() => {
+    if (changeSucceeded && !needsPasswordChange) {
+      setLocation(redirectPathRef.current);
+    }
+  }, [changeSucceeded, needsPasswordChange, setLocation]);
 
   const changePasswordFormSchema = z.object({
     currentPassword: z.string().min(1, t('currentPassword')),
@@ -61,9 +72,10 @@ export default function ChangePasswordPage() {
       // completing a password change they were required to make all the way back to
       // the municipality picker to start over.
       if (result?.token && user) {
-        login(user, result.token);
-        updateUser({ passwordNeedsReset: false });
-        setLocation(redirectPathRef.current);
+        // One update: the replacement token and the cleared flag together. The
+        // effect above performs the navigation once React has both.
+        login({ ...user, passwordNeedsReset: false }, result.token);
+        setChangeSucceeded(true);
         return;
       }
 

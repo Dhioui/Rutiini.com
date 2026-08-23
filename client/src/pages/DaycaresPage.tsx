@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '@/contexts/AuthContext';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -23,6 +24,7 @@ const AROMI_URLS: Record<string, string> = {
 
 export function DaycaresPage() {
   const { t } = useTranslation();
+  const { user } = useAuth();
   const { toast } = useToast();
   const [isOpen, setIsOpen] = useState(false);
   const [name, setName] = useState('');
@@ -31,8 +33,16 @@ export function DaycaresPage() {
   const [menuSourceType, setMenuSourceType] = useState<'none' | 'aromi' | 'manual'>('none');
   const [menuSourceUrl, setMenuSourceUrl] = useState('');
 
+  // Managing daycares is a super admin function -- /api/daycares rejects everyone
+  // else. Without this guard the page rendered its full management UI for any
+  // signed-in user and only then failed on a 403, which reads as a broken screen
+  // rather than one they are not entitled to. UsersPage and AuditLogsPage already
+  // guard this way; enabled below so the query does not fire either.
+  const canManageDaycares = user?.role === 'super_admin';
+
   const { data: daycares, isLoading } = useQuery<Daycare[]>({
     queryKey: ['/api/daycares'],
+    enabled: canManageDaycares,
   });
 
   const createMutation = useMutation({
@@ -117,6 +127,14 @@ export function DaycaresPage() {
       menuSourceUrl: menuSourceType === 'aromi' ? menuSourceUrl : undefined,
     });
   };
+
+  if (!canManageDaycares) {
+    return (
+      <div className="p-8 text-center">
+        <p className="text-muted-foreground">{t('accessDenied')}</p>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return <div className="p-8">{t('loading')}</div>;

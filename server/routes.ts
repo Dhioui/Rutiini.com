@@ -1016,31 +1016,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
       }
       
-      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+      if (!['daycareleader', 'staff', 'guardian'].includes(user.role)) {
         return res.status(403).json({ error: 'Unauthorized' });
       }
       
       if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
       
-      const users = await storage.getUsersByDaycare(user.daycareId);
-      
-      const usersWithChildren = await Promise.all(
-        users.map(async (u) => {
-          let linkedChildren: Child[] = [];
-          if (u.role === 'guardian') {
-            const allLinkedChildren = await storage.getChildrenByGuardian(u.id);
-            linkedChildren = allLinkedChildren.filter(c => c.daycareId === user.daycareId);
-          }
-          return {
+      const daycareUsers = await storage.getUsersByDaycare(user.daycareId);
+
+      // A guardian needs this list to pick who to message, but must not learn which
+      // other families attend the daycare. They see the staff and leaders of their
+      // own daycare and nothing else -- no other guardians, and no child links.
+      if (user.role === 'guardian') {
+        const contacts = daycareUsers
+          .filter((u) => u.role === 'staff' || u.role === 'daycareleader')
+          .map((u) => ({
             id: u.id,
             name: u.name,
-            email: u.email,
             role: u.role,
             daycareId: u.daycareId,
-            linkedChildren: linkedChildren.map(c => ({ id: c.id, name: c.name })),
-          };
-        })
+            linkedChildren: [] as { id: number; name: string }[],
+          }));
+        return res.json(contacts);
+      }
+
+      // Staff and leaders see the full roster. The child links are fetched in one
+      // query for all guardians rather than one query per guardian.
+      const childrenByGuardian = await storage.getChildrenByGuardians(
+        daycareUsers.filter((u) => u.role === 'guardian').map((u) => u.id)
       );
+
+      const usersWithChildren = daycareUsers.map((u) => {
+        const linkedChildren = (childrenByGuardian.get(u.id) ?? [])
+          .filter((c) => c.daycareId === user.daycareId);
+        return {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          daycareId: u.daycareId,
+          linkedChildren: linkedChildren.map((c) => ({ id: c.id, name: c.name })),
+        };
+      });
       
       res.json(usersWithChildren);
     } catch (error) {

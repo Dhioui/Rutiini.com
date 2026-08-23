@@ -699,6 +699,12 @@ const resources = {
       daycareCodeHint: 'Users will use this code to select their daycare during login.',
       daycareDialogDescription: 'Create a new daycare. Each daycare will have its own unique code for login.',
       daycareNamePlaceholder: 'Sunshine Daycare',
+
+      // Role identifiers as they are stored on the user record. Dashboard and
+      // user lists translate the raw value, so a missing key renders the
+      // identifier itself -- 'daycareleader' was showing untranslated.
+      daycareleader: 'Daycare Leader',
+      super_admin: 'Super Admin',
     }
   },
   fi: {
@@ -1397,6 +1403,12 @@ const resources = {
       daycareCodeHint: 'Käyttäjät käyttävät tätä koodia valitessaan päiväkodin kirjautumisen yhteydessä.',
       daycareDialogDescription: 'Luo uusi päiväkoti. Jokaisella päiväkodilla on oma yksilöllinen koodi kirjautumista varten.',
       daycareNamePlaceholder: 'Aurinko Päiväkoti',
+
+      // Role identifiers as they are stored on the user record. Dashboard and
+      // user lists translate the raw value, so a missing key renders the
+      // identifier itself -- 'daycareleader' was showing untranslated.
+      daycareleader: 'Päiväkodin johtaja',
+      super_admin: 'Pääkäyttäjä',
     }
   },
   sv: {
@@ -2093,6 +2105,12 @@ const resources = {
       submitRequest: 'Skicka begäran',
       submitting: 'Skickar...',
       updateFailed: 'Begäran kunde inte uppdateras. Försök igen.',
+
+      // Role identifiers as they are stored on the user record. Dashboard and
+      // user lists translate the raw value, so a missing key renders the
+      // identifier itself -- 'daycareleader' was showing untranslated.
+      daycareleader: 'Föreståndare',
+      super_admin: 'Superadmin',
     }
   },
   ar: {
@@ -2789,6 +2807,12 @@ const resources = {
       submitRequest: 'إرسال الطلب',
       submitting: 'جارٍ الإرسال...',
       updateFailed: 'تعذّر تحديث الطلب. حاول مرة أخرى.',
+
+      // Role identifiers as they are stored on the user record. Dashboard and
+      // user lists translate the raw value, so a missing key renders the
+      // identifier itself -- 'daycareleader' was showing untranslated.
+      daycareleader: 'مدير الحضانة',
+      super_admin: 'المدير العام',
     }
   },
   ru: {
@@ -3485,6 +3509,12 @@ const resources = {
       submitRequest: 'Отправить запрос',
       submitting: 'Отправка...',
       updateFailed: 'Не удалось обновить запрос. Попробуйте ещё раз.',
+
+      // Role identifiers as they are stored on the user record. Dashboard and
+      // user lists translate the raw value, so a missing key renders the
+      // identifier itself -- 'daycareleader' was showing untranslated.
+      daycareleader: 'Заведующий',
+      super_admin: 'Суперадминистратор',
     }
   },
   so: {
@@ -4184,6 +4214,12 @@ const resources = {
       submitRequest: 'Dir codsiga',
       submitting: 'Waa la dirayaa...',
       updateFailed: 'Codsiga lama cusboonaysiin. Fadlan isku day mar kale.',
+
+      // Role identifiers as they are stored on the user record. Dashboard and
+      // user lists translate the raw value, so a missing key renders the
+      // identifier itself -- 'daycareleader' was showing untranslated.
+      daycareleader: 'Inkoode',
+      super_admin: 'Super Admin',
     }
   }
 };

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, type ReactNode } from 'react';
 import { useLocation } from 'wouter';
 import type { User } from '@shared/schema';
 
@@ -23,19 +23,36 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [, setLocation] = useLocation();
-
-  useEffect(() => {
+/**
+ * Read the stored session before the first render.
+ *
+ * This used to happen in an effect, so the first render always reported "not
+ * signed in". ProtectedRoute reacted by redirecting to "/", which discarded the
+ * path the browser had actually asked for -- so refreshing the page anywhere,
+ * following a bookmark, or opening a link to a specific screen all dropped the
+ * user on the dashboard instead. Reading synchronously means the very first render
+ * already knows who is signed in.
+ *
+ * localStorage can throw (private browsing, site data blocked) and can hold
+ * malformed JSON from an older version, so a failure here is treated as "signed
+ * out" rather than crashing the application at boot.
+ */
+function readStoredSession(): { user: AuthUser | null; token: string | null } {
+  try {
     const storedUser = localStorage.getItem('user');
     const storedToken = localStorage.getItem('token');
-    if (storedUser && storedToken) {
-      setUser(JSON.parse(storedUser));
-      setToken(storedToken);
-    }
-  }, []);
+    if (!storedUser || !storedToken) return { user: null, token: null };
+    return { user: JSON.parse(storedUser) as AuthUser, token: storedToken };
+  } catch {
+    return { user: null, token: null };
+  }
+}
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [stored] = useState(readStoredSession);
+  const [user, setUser] = useState<AuthUser | null>(stored.user);
+  const [token, setToken] = useState<string | null>(stored.token);
+  const [, setLocation] = useLocation();
 
   const login = (user: AuthUser, token: string) => {
     setUser(user);

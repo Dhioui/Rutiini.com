@@ -157,6 +157,7 @@ export interface IStorage {
   markAllNotificationsAsRead(userId: number): Promise<void>;
   getGuardiansForChild(childId: number): Promise<User[]>;
   getGuardiansForChildren(childIds: number[]): Promise<User[]>;
+  getChildrenByGuardians(userIds: number[]): Promise<Map<number, Child[]>>;
   getStaffByDaycare(daycareId: number): Promise<User[]>;
   
   // Daycare Groups
@@ -990,6 +991,30 @@ export class DatabaseStorage implements IStorage {
     if (userIds.length === 0) return [];
 
     return await db.select().from(users).where(inArray(users.id, userIds));
+  }
+
+  /**
+   * Children linked to each of the given guardians, in one query rather than one
+   * per guardian. The staff-facing user list previously called
+   * getChildrenByGuardian once per row, so opening it in a daycare with 150
+   * guardians issued 150 extra queries.
+   */
+  async getChildrenByGuardians(userIds: number[]): Promise<Map<number, Child[]>> {
+    const byGuardian = new Map<number, Child[]>();
+    if (userIds.length === 0) return byGuardian;
+
+    const rows = await db
+      .select({ userId: guardians.userId, child: children })
+      .from(guardians)
+      .innerJoin(children, eq(guardians.childId, children.id))
+      .where(inArray(guardians.userId, userIds));
+
+    for (const row of rows) {
+      const list = byGuardian.get(row.userId);
+      if (list) list.push(row.child);
+      else byGuardian.set(row.userId, [row.child]);
+    }
+    return byGuardian;
   }
 
   async getGuardiansForChild(childId: number): Promise<User[]> {
