@@ -1,0 +1,43 @@
+require_relative '../../node_modules/@capacitor/ios/scripts/pods_helpers'
+
+platform :ios, '14.0'
+use_frameworks!
+
+# workaround to avoid Xcode caching of Pods that requires
+# Product -> Clean Build Folder after new Cordova plugins installed
+# Requires CocoaPods 1.6 or newer
+install! 'cocoapods', :disable_input_output_paths => true
+
+def capacitor_pods
+  pod 'Capacitor', :path => '../../node_modules/@capacitor/ios'
+  pod 'CapacitorCordova', :path => '../../node_modules/@capacitor/ios'
+  pod 'CapacitorPushNotifications', :path => '../../node_modules/@capacitor/push-notifications'
+  pod 'CapgoCapacitorUpdater', :path => '../../node_modules/@capgo/capacitor-updater'
+end
+
+target 'App' do
+  capacitor_pods
+  # Add your Pods here
+end
+
+post_install do |installer|
+  assertDeploymentTarget(installer)
+  
+  # Fix Embed Pods Frameworks script phase
+  installer.pods_project.targets.each do |target|
+    if target.name == 'Pods-App'
+      target.build_configurations.each do |config|
+        script_phase = target.shell_script_build_phases.find { |phase| phase.name.include?('Embed Pods Frameworks') }
+        if script_phase
+          script_phase.output_paths = ["${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"]
+          script_phase.input_paths = []
+        end
+      end
+    end
+  end
+  
+  # Fix all shell scripts permissions
+  Dir.glob("Pods/Target Support Files/**/*.sh").each do |script|
+    File.chmod(0755, script)
+  end
+end
