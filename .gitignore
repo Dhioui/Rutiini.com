@@ -1,0 +1,14 @@
+node_modules
+dist
+.DS_Store
+server/public
+vite.config.ts.*
+*.tar.gz
+
+# Never commit local signing keys or machine-specific Android settings.
+**/keystore.properties
+**/local.properties
+**/*.jks
+**/*.keystore
+**/*.pem
+**/*.key
