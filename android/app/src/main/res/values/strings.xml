@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Rutiini</string>
+    <string name="title_activity_main">Rutiini</string>
+    <string name="package_name">com.rutiini.app</string>
+    <string name="custom_url_scheme">com.rutiini.app</string>
+</resources>
