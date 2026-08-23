@@ -2,17 +2,24 @@ import express, { type Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
+import compression from "compression";
 import cron from "node-cron";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { fetchAndSaveMenu, fetchAndSaveMenuForDaycare } from "./menuScraper";
 import { storage } from "./storage";
+import { withAdvisoryLock, LOCK_KEYS } from "./db";
 
 const app = express();
 
 // Trust proxy for proper IP detection
 // Always set to 1 for rate limiting to work correctly with X-Forwarded-For headers
 app.set('trust proxy', 1);
+
+// Compress responses before they leave the process. JSON list endpoints are highly
+// repetitive and typically shrink by an order of magnitude, which matters most on the
+// mobile clients where bandwidth, not server CPU, is the limiting factor.
+app.use(compression());
 
 // Security middleware
 // CSRF Protection: Not required for JWT-based authentication because:
@@ -104,31 +111,24 @@ app.use((req, res, next) => {
   next();
 });
 
+// Request logging.
+//
+// This previously wrapped res.json to keep a reference to every response body and
+// then JSON.stringify'd it on finish, only to truncate the result to 80 characters.
+// That meant a second full serialisation of every payload -- on a list endpoint
+// returning hundreds of rows, the logger cost more than the handler. Response bodies
+// are no longer captured: they are the request's largest object, they may contain
+// personal data that does not belong in logs, and the line was truncated anyway.
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
 
   res.on("finish", () => {
-    const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
-      }
-
-      log(logLine);
+    if (!path.startsWith("/api")) {
+      return;
     }
+    const duration = Date.now() - start;
+    log(`${req.method} ${path} ${res.statusCode} in ${duration}ms`);
   });
 
   next();
@@ -168,31 +168,37 @@ app.use((req, res, next) => {
     
     // Schedule menu scraping daily at 03:00 (Helsinki time)
     cron.schedule('0 3 * * *', async () => {
-      log('[Cron] Starting daily menu scrape for all Aromi daycares...');
-      try {
-        // Get all daycares with menu_source_type='aromi'
-        const aromidaycares = await storage.getDaycaresByMenuSource('aromi');
+      // Guarded so only one instance scrapes, however many are running.
+      const ran = await withAdvisoryLock(LOCK_KEYS.menuScrape, async () => {
+        log('[Cron] Starting daily menu scrape for all Aromi daycares...');
+        try {
+          // Get all daycares with menu_source_type='aromi'
+          const aromidaycares = await storage.getDaycaresByMenuSource('aromi');
         
-        if (aromidaycares.length === 0) {
-          log('[Cron] No daycares with Aromi menu source configured');
-          return;
-        }
-        
-        log(`[Cron] Found ${aromidaycares.length} daycares with Aromi source`);
-        
-        // Fetch menu for each daycare
-        for (const daycare of aromidaycares) {
-          try {
-            const result = await fetchAndSaveMenuForDaycare(daycare.id, daycare.menuSourceUrl || undefined);
-            log(`[Cron] Daycare ${daycare.name} (${daycare.id}): ${result.message}`);
-          } catch (error: any) {
-            log(`[Cron] Daycare ${daycare.name} (${daycare.id}) failed: ${error.message}`);
+          if (aromidaycares.length === 0) {
+            log('[Cron] No daycares with Aromi menu source configured');
+            return;
           }
-        }
         
-        log('[Cron] Menu scrape complete for all daycares');
-      } catch (error: any) {
-        log(`[Cron] Menu scrape failed: ${error.message}`);
+          log(`[Cron] Found ${aromidaycares.length} daycares with Aromi source`);
+        
+          // Fetch menu for each daycare
+          for (const daycare of aromidaycares) {
+            try {
+              const result = await fetchAndSaveMenuForDaycare(daycare.id, daycare.menuSourceUrl || undefined);
+              log(`[Cron] Daycare ${daycare.name} (${daycare.id}): ${result.message}`);
+            } catch (error: any) {
+              log(`[Cron] Daycare ${daycare.name} (${daycare.id}) failed: ${error.message}`);
+            }
+          }
+        
+          log('[Cron] Menu scrape complete for all daycares');
+        } catch (error: any) {
+          log(`[Cron] Menu scrape failed: ${error.message}`);
+        }
+      });
+      if (!ran) {
+        log('[Cron] Menu scrape already running on another instance, skipped');
       }
     }, {
       timezone: 'Europe/Helsinki'
@@ -202,46 +208,52 @@ app.use((req, res, next) => {
     // GDPR Data Retention cron job - runs at 02:00 daily (before menu scraping)
     // Configurable via environment variables (defaults: audit 12mo, messages 12mo, trips 12mo, absences 24mo)
     cron.schedule('0 2 * * *', async () => {
-      log('[Cron] Starting GDPR data retention cleanup...');
-      try {
-        const AUDIT_RETENTION_MONTHS = parseInt(process.env.RETENTION_AUDIT_MONTHS || '12', 10);
-        const MESSAGES_RETENTION_MONTHS = parseInt(process.env.RETENTION_MESSAGES_MONTHS || '12', 10);
-        const TRIPS_RETENTION_MONTHS = parseInt(process.env.RETENTION_TRIPS_MONTHS || '12', 10);
-        const ABSENCES_RETENTION_MONTHS = parseInt(process.env.RETENTION_ABSENCES_MONTHS || '24', 10);
-        const NOTIFICATIONS_RETENTION_MONTHS = parseInt(process.env.RETENTION_NOTIFICATIONS_MONTHS || '6', 10);
-        const ENTRIES_RETENTION_MONTHS = parseInt(process.env.RETENTION_ENTRIES_MONTHS || '24', 10);
+      // Guarded so only one instance performs the retention deletes.
+      const ran = await withAdvisoryLock(LOCK_KEYS.dataRetention, async () => {
+        log('[Cron] Starting GDPR data retention cleanup...');
+        try {
+          const AUDIT_RETENTION_MONTHS = parseInt(process.env.RETENTION_AUDIT_MONTHS || '12', 10);
+          const MESSAGES_RETENTION_MONTHS = parseInt(process.env.RETENTION_MESSAGES_MONTHS || '12', 10);
+          const TRIPS_RETENTION_MONTHS = parseInt(process.env.RETENTION_TRIPS_MONTHS || '12', 10);
+          const ABSENCES_RETENTION_MONTHS = parseInt(process.env.RETENTION_ABSENCES_MONTHS || '24', 10);
+          const NOTIFICATIONS_RETENTION_MONTHS = parseInt(process.env.RETENTION_NOTIFICATIONS_MONTHS || '6', 10);
+          const ENTRIES_RETENTION_MONTHS = parseInt(process.env.RETENTION_ENTRIES_MONTHS || '24', 10);
         
-        // Cleanup audit logs
-        const auditLogsDeleted = await storage.cleanupOldAuditLogs(AUDIT_RETENTION_MONTHS);
-        log(`[Cron] Audit logs deleted: ${auditLogsDeleted} (retention: ${AUDIT_RETENTION_MONTHS} months)`);
+          // Cleanup audit logs
+          const auditLogsDeleted = await storage.cleanupOldAuditLogs(AUDIT_RETENTION_MONTHS);
+          log(`[Cron] Audit logs deleted: ${auditLogsDeleted} (retention: ${AUDIT_RETENTION_MONTHS} months)`);
         
-        // Cleanup messages
-        const messagesDeleted = await storage.cleanupOldMessages(MESSAGES_RETENTION_MONTHS);
-        log(`[Cron] Messages deleted: ${messagesDeleted} (retention: ${MESSAGES_RETENTION_MONTHS} months)`);
+          // Cleanup messages
+          const messagesDeleted = await storage.cleanupOldMessages(MESSAGES_RETENTION_MONTHS);
+          log(`[Cron] Messages deleted: ${messagesDeleted} (retention: ${MESSAGES_RETENTION_MONTHS} months)`);
         
-        // Cleanup trips and responses
-        const tripsDeleted = await storage.cleanupOldTrips(TRIPS_RETENTION_MONTHS);
-        log(`[Cron] Trips deleted: ${tripsDeleted} (retention: ${TRIPS_RETENTION_MONTHS} months)`);
+          // Cleanup trips and responses
+          const tripsDeleted = await storage.cleanupOldTrips(TRIPS_RETENTION_MONTHS);
+          log(`[Cron] Trips deleted: ${tripsDeleted} (retention: ${TRIPS_RETENTION_MONTHS} months)`);
         
-        // Cleanup absences
-        const absencesDeleted = await storage.cleanupOldAbsences(ABSENCES_RETENTION_MONTHS);
-        log(`[Cron] Absences deleted: ${absencesDeleted} (retention: ${ABSENCES_RETENTION_MONTHS} months)`);
+          // Cleanup absences
+          const absencesDeleted = await storage.cleanupOldAbsences(ABSENCES_RETENTION_MONTHS);
+          log(`[Cron] Absences deleted: ${absencesDeleted} (retention: ${ABSENCES_RETENTION_MONTHS} months)`);
         
-        // Cleanup notifications
-        const notificationsDeleted = await storage.cleanupOldNotifications(NOTIFICATIONS_RETENTION_MONTHS);
-        log(`[Cron] Notifications deleted: ${notificationsDeleted} (retention: ${NOTIFICATIONS_RETENTION_MONTHS} months)`);
+          // Cleanup notifications
+          const notificationsDeleted = await storage.cleanupOldNotifications(NOTIFICATIONS_RETENTION_MONTHS);
+          log(`[Cron] Notifications deleted: ${notificationsDeleted} (retention: ${NOTIFICATIONS_RETENTION_MONTHS} months)`);
         
-        // Cleanup daily entries
-        const entriesDeleted = await storage.cleanupOldEntries(ENTRIES_RETENTION_MONTHS);
-        log(`[Cron] Entries deleted: ${entriesDeleted} (retention: ${ENTRIES_RETENTION_MONTHS} months)`);
+          // Cleanup daily entries
+          const entriesDeleted = await storage.cleanupOldEntries(ENTRIES_RETENTION_MONTHS);
+          log(`[Cron] Entries deleted: ${entriesDeleted} (retention: ${ENTRIES_RETENTION_MONTHS} months)`);
         
-        // Cleanup expired session tokens
-        const expiredTokens = await storage.deleteExpiredSessionTokens();
-        log(`[Cron] Expired session tokens deleted: ${expiredTokens}`);
+          // Cleanup expired session tokens
+          const expiredTokens = await storage.deleteExpiredSessionTokens();
+          log(`[Cron] Expired session tokens deleted: ${expiredTokens}`);
         
-        log('[Cron] GDPR data retention cleanup complete');
-      } catch (error: any) {
-        log(`[Cron] Data retention cleanup failed: ${error.message}`);
+          log('[Cron] GDPR data retention cleanup complete');
+        } catch (error: any) {
+          log(`[Cron] Data retention cleanup failed: ${error.message}`);
+        }
+      });
+      if (!ran) {
+        log('[Cron] Data retention already running on another instance, skipped');
       }
     }, {
       timezone: 'Europe/Helsinki'

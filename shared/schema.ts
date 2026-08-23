@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, date, boolean, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, date, boolean, jsonb, index } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -25,7 +25,11 @@ export const daycares = pgTable("daycares", {
   menuSourceType: text("menu_source_type").notNull().default('none'), // 'aromi', 'manual', 'none' - overrides municipality default
   menuSourceUrl: text("menu_source_url"), // For aromi: the specific school/daycare URL
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("daycares_municipality_id_idx").on(table.municipalityId),
+  index("daycares_municipality_idx").on(table.municipality),
+  index("daycares_menu_source_type_idx").on(table.menuSourceType),
+]);
 
 // Groups within a daycare (e.g., "Toddlers", "Preschool")
 export const daycareGroups = pgTable("daycare_groups", {
@@ -33,7 +37,9 @@ export const daycareGroups = pgTable("daycare_groups", {
   daycareId: integer("daycare_id").notNull().references(() => daycares.id),
   name: text("name").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("daycare_groups_daycare_id_idx").on(table.daycareId),
+]);
 
 export const users = pgTable("users", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -52,7 +58,11 @@ export const users = pgTable("users", {
   failedLoginAttempts: integer("failed_login_attempts").notNull().default(0),
   lockedUntil: timestamp("locked_until"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("users_daycare_id_role_idx").on(table.daycareId, table.role),
+  index("users_role_idx").on(table.role),
+  index("users_reset_token_hash_idx").on(table.resetTokenHash),
+]);
 
 // Session tokens for secure logout (invalidates JWT on logout)
 export const sessionTokens = pgTable("session_tokens", {
@@ -61,7 +71,10 @@ export const sessionTokens = pgTable("session_tokens", {
   tokenHash: text("token_hash").notNull().unique(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   expiresAt: timestamp("expires_at").notNull(),
-});
+}, (table) => [
+  index("session_tokens_user_id_idx").on(table.userId),
+  index("session_tokens_expires_at_idx").on(table.expiresAt),
+]);
 
 // Teacher to group assignments (a teacher can belong to multiple groups)
 export const teacherGroupAssignments = pgTable("teacher_group_assignments", {
@@ -69,7 +82,10 @@ export const teacherGroupAssignments = pgTable("teacher_group_assignments", {
   userId: integer("user_id").notNull().references(() => users.id),
   groupId: integer("group_id").notNull().references(() => daycareGroups.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("teacher_group_assignments_user_id_idx").on(table.userId),
+  index("teacher_group_assignments_group_id_idx").on(table.groupId),
+]);
 
 // Audit logs for GDPR compliance - NO personal data stored
 export const auditLogs = pgTable("audit_logs", {
@@ -82,7 +98,11 @@ export const auditLogs = pgTable("audit_logs", {
   entityType: text("entity_type").notNull(), // e.g., 'user', 'child', 'trip'
   entityIdHash: text("entity_id_hash"), // hashed ID for audit without exposing personal data
   metadata: jsonb("metadata"), // additional non-PII context
-});
+}, (table) => [
+  index("audit_logs_daycare_id_timestamp_idx").on(table.daycareId, table.timestamp),
+  index("audit_logs_timestamp_idx").on(table.timestamp),
+  index("audit_logs_actor_id_idx").on(table.actorId),
+]);
 
 export const children = pgTable("children", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -90,13 +110,19 @@ export const children = pgTable("children", {
   birthdate: date("birthdate").notNull(),
   groupId: integer("group_id"),
   daycareId: integer("daycare_id").notNull().references(() => daycares.id),
-});
+}, (table) => [
+  index("children_daycare_id_idx").on(table.daycareId),
+  index("children_group_id_idx").on(table.groupId),
+]);
 
 export const guardians = pgTable("guardians", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   userId: integer("user_id").notNull().references(() => users.id),
   childId: integer("child_id").notNull().references(() => children.id),
-});
+}, (table) => [
+  index("guardians_user_id_idx").on(table.userId),
+  index("guardians_child_id_idx").on(table.childId),
+]);
 
 export const entries = pgTable("entries", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -106,7 +132,11 @@ export const entries = pgTable("entries", {
   note: text("note"),
   staffId: integer("staff_id").notNull().references(() => users.id),
   timestamp: timestamp("timestamp").notNull().defaultNow(),
-});
+}, (table) => [
+  index("entries_child_id_timestamp_idx").on(table.childId, table.timestamp),
+  index("entries_timestamp_idx").on(table.timestamp),
+  index("entries_staff_id_idx").on(table.staffId),
+]);
 
 export const trips = pgTable("trips", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -119,7 +149,11 @@ export const trips = pgTable("trips", {
   daycareId: integer("daycare_id").notNull().references(() => daycares.id),
   groupId: integer("group_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("trips_daycare_id_date_idx").on(table.daycareId, table.date),
+  index("trips_created_by_idx").on(table.createdBy),
+  index("trips_created_at_idx").on(table.createdAt),
+]);
 
 export const tripResponses = pgTable("trip_responses", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -128,7 +162,11 @@ export const tripResponses = pgTable("trip_responses", {
   childId: integer("child_id").notNull().references(() => children.id),
   response: text("response").notNull(),
   respondedAt: timestamp("responded_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("trip_responses_trip_id_idx").on(table.tripId),
+  index("trip_responses_guardian_id_idx").on(table.guardianId),
+  index("trip_responses_child_id_idx").on(table.childId),
+]);
 
 export const absences = pgTable("absences", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -139,7 +177,13 @@ export const absences = pgTable("absences", {
   reason: text("reason"),
   reportedById: integer("reported_by_id").notNull().references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("absences_daycare_id_date_idx").on(table.daycareId, table.date),
+  index("absences_child_id_date_idx").on(table.childId, table.date),
+  index("absences_date_idx").on(table.date),
+  index("absences_reported_by_id_idx").on(table.reportedById),
+  index("absences_created_at_idx").on(table.createdAt),
+]);
 
 export const messages = pgTable("messages", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -151,7 +195,14 @@ export const messages = pgTable("messages", {
   imageUrl: text("image_url"),
   read: boolean("read").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("messages_daycare_id_created_at_idx").on(table.daycareId, table.createdAt),
+  index("messages_recipient_id_created_at_idx").on(table.recipientId, table.createdAt),
+  index("messages_sender_id_created_at_idx").on(table.senderId, table.createdAt),
+  index("messages_sender_recipient_idx").on(table.senderId, table.recipientId),
+  index("messages_child_id_idx").on(table.childId),
+  index("messages_created_at_idx").on(table.createdAt),
+]);
 
 export const documents = pgTable("documents", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -162,7 +213,10 @@ export const documents = pgTable("documents", {
   fileUrl: text("file_url"),
   publishedById: integer("published_by_id").notNull().references(() => users.id),
   publishedAt: timestamp("published_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("documents_daycare_id_published_at_idx").on(table.daycareId, table.publishedAt),
+  index("documents_published_by_id_idx").on(table.publishedById),
+]);
 
 export const notifications = pgTable("notifications", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -174,7 +228,12 @@ export const notifications = pgTable("notifications", {
   relatedId: integer("related_id"),
   read: boolean("read").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("notifications_user_id_created_at_idx").on(table.userId, table.createdAt),
+  index("notifications_user_id_read_idx").on(table.userId, table.read),
+  index("notifications_daycare_id_idx").on(table.daycareId),
+  index("notifications_created_at_idx").on(table.createdAt),
+]);
 
 // Meal menu items scraped from external sources (e.g., Aromi) - now per daycare
 export const mealMenus = pgTable("meal_menus", {
@@ -187,7 +246,10 @@ export const mealMenus = pgTable("meal_menus", {
   dietInfo: text("diet_info"), // comma-separated: L,M,G,N,S,K,Veg
   sourceUrl: text("source_url"), // for extensibility - which municipality source
   scrapedAt: timestamp("scraped_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("meal_menus_daycare_id_date_idx").on(table.daycareId, table.date),
+  index("meal_menus_date_idx").on(table.date),
+]);
 
 // Dynamic forms system - Admin creates forms, Guardians fill them out
 export const forms = pgTable("forms", {
@@ -202,7 +264,11 @@ export const forms = pgTable("forms", {
   createdById: integer("created_by_id").notNull().references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("forms_daycare_id_is_active_idx").on(table.daycareId, table.isActive),
+  index("forms_created_by_id_idx").on(table.createdById),
+  index("forms_created_at_idx").on(table.createdAt),
+]);
 
 // Form submissions from guardians
 export const formSubmissions = pgTable("form_submissions", {
@@ -213,7 +279,12 @@ export const formSubmissions = pgTable("form_submissions", {
   childId: integer("child_id").references(() => children.id), // null if form doesn't require child context
   responses: jsonb("responses").notNull(), // JSON object matching form fields
   submittedAt: timestamp("submitted_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("form_submissions_form_id_submitted_at_idx").on(table.formId, table.submittedAt),
+  index("form_submissions_daycare_id_submitted_at_idx").on(table.daycareId, table.submittedAt),
+  index("form_submissions_submitted_by_id_idx").on(table.submittedById),
+  index("form_submissions_child_id_idx").on(table.childId),
+]);
 
 // Child-specific consents (quick consents that staff can view at a glance)
 export const childConsents = pgTable("child_consents", {
@@ -225,7 +296,11 @@ export const childConsents = pgTable("child_consents", {
   grantedById: integer("granted_by_id").notNull().references(() => users.id),
   notes: text("notes"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("child_consents_child_id_consent_type_idx").on(table.childId, table.consentType),
+  index("child_consents_daycare_id_idx").on(table.daycareId),
+  index("child_consents_granted_by_id_idx").on(table.grantedById),
+]);
 
 export const municipalitiesRelations = relations(municipalities, ({ many }) => ({
   daycares: many(daycares),
@@ -678,7 +753,12 @@ export const deleteRequests = pgTable("delete_requests", {
   processedById: integer("processed_by_id").references(() => users.id),
   processedAt: timestamp("processed_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("delete_requests_status_created_at_idx").on(table.status, table.createdAt),
+  index("delete_requests_user_id_idx").on(table.userId),
+  index("delete_requests_daycare_id_idx").on(table.daycareId),
+  index("delete_requests_processed_by_id_idx").on(table.processedById),
+]);
 
 export const deleteRequestsRelations = relations(deleteRequests, ({ one }) => ({
   user: one(users, {
@@ -709,7 +789,10 @@ export const pushTokens = pgTable("push_tokens", {
   platform: text("platform").notNull(), // 'ios' or 'android'
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("push_tokens_user_id_idx").on(table.userId),
+  index("push_tokens_token_idx").on(table.token),
+]);
 
 export const insertPushTokenSchema = z.object({
   userId: z.number().int().positive(),

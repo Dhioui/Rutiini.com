@@ -66,7 +66,12 @@ import {
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, inArray, or, desc, asc, count, sql, isNull, gte, lte } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
+import type { PgTable, AnyPgColumn } from "drizzle-orm/pg-core";
 import crypto from "crypto";
+
+import { LIST_LIMITS } from "./pagination";
+export { LIST_LIMITS, MAX_LIST_LIMIT } from "./pagination";
 
 export interface IStorage {
   // Municipality CRUD
@@ -96,7 +101,7 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   deleteUser(id: number): Promise<void>;
   
-  getChildren(daycareId: number): Promise<Child[]>;
+  getChildren(daycareId: number, limit?: number, offset?: number): Promise<Child[]>;
   getAllChildren(): Promise<Child[]>;
   getChildrenByGuardian(guardianId: number): Promise<Child[]>;
   getChild(id: number): Promise<Child | undefined>;
@@ -106,13 +111,13 @@ export interface IStorage {
   deleteGuardiansByUserId(userId: number): Promise<void>;
   deleteGuardiansByChildId(childId: number): Promise<void>;
   
-  getEntries(daycareId: number): Promise<Entry[]>;
+  getEntries(daycareId: number, limit?: number, offset?: number): Promise<Entry[]>;
   getAllEntries(): Promise<Entry[]>;
-  getEntriesByChild(childId: number): Promise<Entry[]>;
+  getEntriesByChild(childId: number, limit?: number, offset?: number): Promise<Entry[]>;
   getEntriesByDateRange(daycareId: number, startDate: Date, endDate: Date): Promise<Entry[]>;
   createEntry(entry: InsertEntry): Promise<Entry>;
   
-  getTrips(daycareId: number): Promise<Trip[]>;
+  getTrips(daycareId: number, limit?: number, offset?: number): Promise<Trip[]>;
   getAllTrips(): Promise<Trip[]>;
   getTrip(id: number): Promise<Trip | undefined>;
   createTrip(trip: InsertTrip): Promise<Trip>;
@@ -125,13 +130,14 @@ export interface IStorage {
   
   createGuardianRelation(userId: number, childId: number): Promise<void>;
   
-  getAbsences(daycareId: number): Promise<Absence[]>;
+  getAbsences(daycareId: number, limit?: number, offset?: number): Promise<Absence[]>;
   getAllAbsences(): Promise<Absence[]>;
   getAbsencesByChild(childId: number): Promise<Absence[]>;
   getAbsencesByDateRange(daycareId: number, startDate: Date, endDate: Date): Promise<Absence[]>;
   createAbsence(absence: InsertAbsence): Promise<Absence>;
   
-  getMessages(userId: number, daycareId: number): Promise<Message[]>;
+  getMessages(userId: number, daycareId: number, limit?: number, offset?: number): Promise<Message[]>;
+  getMessageById(id: number): Promise<Message | undefined>;
   getConversation(userId: number, otherUserId: number): Promise<Message[]>;
   createMessage(message: InsertMessage): Promise<Message>;
   markMessageAsRead(messageId: number): Promise<void>;
@@ -142,12 +148,15 @@ export interface IStorage {
   createDocument(document: InsertDocument): Promise<Document>;
   deleteDocument(id: number): Promise<void>;
   
-  getNotifications(userId: number): Promise<Notification[]>;
+  getNotifications(userId: number, limit?: number, offset?: number): Promise<Notification[]>;
+  getNotificationById(id: number): Promise<Notification | undefined>;
+  createNotifications(list: InsertNotification[]): Promise<number>;
   getUnreadNotificationCount(userId: number): Promise<number>;
   createNotification(notification: InsertNotification): Promise<Notification>;
   markNotificationAsRead(notificationId: number): Promise<void>;
   markAllNotificationsAsRead(userId: number): Promise<void>;
   getGuardiansForChild(childId: number): Promise<User[]>;
+  getGuardiansForChildren(childIds: number[]): Promise<User[]>;
   getStaffByDaycare(daycareId: number): Promise<User[]>;
   
   // Daycare Groups
@@ -279,6 +288,7 @@ export interface IStorage {
   // Session Token Management (VAHTI compliance - secure logout)
   createSessionToken(userId: number, tokenHash: string, expiresAt: Date): Promise<SessionToken>;
   getSessionToken(tokenHash: string): Promise<SessionToken | undefined>;
+  getUserBySessionToken(tokenHash: string): Promise<{ user: User; sessionToken: SessionToken } | undefined>;
   deleteSessionToken(tokenHash: string): Promise<void>;
   deleteUserSessionTokens(userId: number): Promise<void>;
   deleteExpiredSessionTokens(): Promise<number>;
@@ -396,34 +406,96 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteDaycare(id: number): Promise<void> {
-    // Delete all related data in order to handle foreign key constraints
-    const daycareUsers = await this.getUsersByDaycare(id);
-    for (const user of daycareUsers) {
-      await this.deleteUser(user.id);
-    }
-    
-    const daycareChildren = await this.getChildren(id);
-    for (const child of daycareChildren) {
-      await this.deleteChild(child.id);
-    }
-    
-    // Delete messages
-    await db.delete(messages).where(eq(messages.daycareId, id));
-    
-    // Delete documents
-    await db.delete(documents).where(eq(documents.daycareId, id));
-    
-    // Delete notifications
-    await db.delete(notifications).where(eq(notifications.daycareId, id));
-    
-    // Delete trips
-    await db.delete(trips).where(eq(trips.daycareId, id));
-    
-    // Delete absences
-    await db.delete(absences).where(eq(absences.daycareId, id));
-    
-    // Finally delete the daycare
-    await db.delete(daycares).where(eq(daycares.id, id));
+    // Set-based rather than a delete per user and per child: a daycare with 100
+    // children and 70 staff previously issued well over a thousand statements. It
+    // also ran outside a transaction, so a failure part-way left the daycare in a
+    // half-deleted state.
+    //
+    // The previous version additionally never removed meal_menus, forms,
+    // form_submissions, child_consents, delete_requests, push_tokens,
+    // teacher_group_assignments, daycare_groups or trip_responses, all of which
+    // carry foreign keys into this daycare -- so deleting a daycare that had ever
+    // had a menu or a form failed on a constraint violation. Every referencing
+    // table is now covered, in dependency order.
+    await db.transaction(async (tx) => {
+      const [daycareUsers, daycareChildren, daycareGroupRows, daycareTrips] = await Promise.all([
+        tx.select({ id: users.id }).from(users).where(eq(users.daycareId, id)),
+        tx.select({ id: children.id }).from(children).where(eq(children.daycareId, id)),
+        tx.select({ id: daycareGroups.id }).from(daycareGroups).where(eq(daycareGroups.daycareId, id)),
+        tx.select({ id: trips.id }).from(trips).where(eq(trips.daycareId, id)),
+      ]);
+
+      const userIds = daycareUsers.map((u) => u.id);
+      const childIds = daycareChildren.map((c) => c.id);
+      const groupIds = daycareGroupRows.map((g) => g.id);
+      const tripIds = daycareTrips.map((t) => t.id);
+
+      // inArray() with an empty list is not valid SQL, so each term is only included
+      // when it has values.
+      const byUser = (col: AnyPgColumn) => (userIds.length ? inArray(col, userIds) : undefined);
+      const byChild = (col: AnyPgColumn) => (childIds.length ? inArray(col, childIds) : undefined);
+
+      // Every delete below goes through this. or() returns undefined when all of its
+      // terms are undefined, and Drizzle treats .where(undefined) as no WHERE clause
+      // at all -- which would delete every row in the table. When there is nothing to
+      // match, there is nothing to delete.
+      const deleteWhere = async (table: PgTable, ...conditions: (SQL | undefined)[]) => {
+        const defined = conditions.filter((c): c is SQL => c !== undefined);
+        if (defined.length === 0) return;
+        await tx.delete(table).where(defined.length === 1 ? defined[0] : or(...defined));
+      };
+
+      // Rows that reference users or children, including any that live in another
+      // daycare but point at ours.
+      await deleteWhere(teacherGroupAssignments,
+        byUser(teacherGroupAssignments.userId),
+        groupIds.length ? inArray(teacherGroupAssignments.groupId, groupIds) : undefined);
+      await deleteWhere(sessionTokens, byUser(sessionTokens.userId));
+      await deleteWhere(pushTokens, byUser(pushTokens.userId));
+      await deleteWhere(deleteRequests,
+        eq(deleteRequests.daycareId, id),
+        byUser(deleteRequests.userId),
+        byUser(deleteRequests.processedById));
+      await deleteWhere(tripResponses,
+        tripIds.length ? inArray(tripResponses.tripId, tripIds) : undefined,
+        byUser(tripResponses.guardianId),
+        byChild(tripResponses.childId));
+      await deleteWhere(formSubmissions,
+        eq(formSubmissions.daycareId, id),
+        byUser(formSubmissions.submittedById),
+        byChild(formSubmissions.childId));
+      await deleteWhere(childConsents,
+        eq(childConsents.daycareId, id),
+        byChild(childConsents.childId),
+        byUser(childConsents.grantedById));
+      await deleteWhere(guardians, byUser(guardians.userId), byChild(guardians.childId));
+      await deleteWhere(entries, byChild(entries.childId), byUser(entries.staffId));
+      await deleteWhere(absences,
+        eq(absences.daycareId, id),
+        byChild(absences.childId),
+        byUser(absences.reportedById));
+      await deleteWhere(messages,
+        eq(messages.daycareId, id),
+        byUser(messages.senderId),
+        byUser(messages.recipientId),
+        byChild(messages.childId));
+      await deleteWhere(notifications,
+        eq(notifications.daycareId, id),
+        byUser(notifications.userId));
+      await deleteWhere(documents,
+        eq(documents.daycareId, id),
+        byUser(documents.publishedById));
+
+      // Now the rows those depended on.
+      await deleteWhere(forms, eq(forms.daycareId, id), byUser(forms.createdById));
+      await deleteWhere(mealMenus, eq(mealMenus.daycareId, id));
+      await deleteWhere(trips, eq(trips.daycareId, id), byUser(trips.createdBy));
+      await deleteWhere(children, eq(children.daycareId, id));
+      await deleteWhere(daycareGroups, eq(daycareGroups.daycareId, id));
+      await deleteWhere(users, eq(users.daycareId, id));
+
+      await deleteWhere(daycares, eq(daycares.id, id));
+    });
   }
 
   async getUser(id: number): Promise<User | undefined> {
@@ -490,8 +562,14 @@ export class DatabaseStorage implements IStorage {
     await db.delete(users).where(eq(users.id, id));
   }
 
-  async getChildren(daycareId: number): Promise<Child[]> {
-    return await db.select().from(children).where(eq(children.daycareId, daycareId));
+  async getChildren(daycareId: number, limit: number = LIST_LIMITS.children, offset: number = 0): Promise<Child[]> {
+    return await db
+      .select()
+      .from(children)
+      .where(eq(children.daycareId, daycareId))
+      .orderBy(children.id)
+      .limit(limit)
+      .offset(offset);
   }
 
   async getAllChildren(): Promise<Child[]> {
@@ -545,24 +623,33 @@ export class DatabaseStorage implements IStorage {
     await db.delete(children).where(eq(children.id, id));
   }
 
-  async getEntries(daycareId: number): Promise<Entry[]> {
+  async getEntries(daycareId: number, limit: number = LIST_LIMITS.entries, offset: number = 0): Promise<Entry[]> {
+    // innerJoin, not leftJoin: the daycare filter lives on children, so a left join
+    // could only ever produce rows this WHERE already discards. Selecting just the
+    // entry columns also avoids carrying every child row back over the wire.
     return await db
-      .select()
+      .select({ entry: entries })
       .from(entries)
-      .leftJoin(children, eq(entries.childId, children.id))
+      .innerJoin(children, eq(entries.childId, children.id))
       .where(eq(children.daycareId, daycareId))
-      .then(rows => rows.map(row => row.entries));
+      .orderBy(desc(entries.timestamp))
+      .limit(limit)
+      .offset(offset)
+      .then(rows => rows.map(row => row.entry));
   }
 
   async getAllEntries(): Promise<Entry[]> {
     return await db.select().from(entries);
   }
 
-  async getEntriesByChild(childId: number): Promise<Entry[]> {
+  async getEntriesByChild(childId: number, limit: number = LIST_LIMITS.entries, offset: number = 0): Promise<Entry[]> {
     return await db
       .select()
       .from(entries)
-      .where(eq(entries.childId, childId));
+      .where(eq(entries.childId, childId))
+      .orderBy(desc(entries.timestamp))
+      .limit(limit)
+      .offset(offset);
   }
 
   async getEntriesByDateRange(daycareId: number, startDate: Date, endDate: Date): Promise<Entry[]> {
@@ -588,12 +675,14 @@ export class DatabaseStorage implements IStorage {
     return entry;
   }
 
-  async getTrips(daycareId: number): Promise<Trip[]> {
+  async getTrips(daycareId: number, limit: number = LIST_LIMITS.trips, offset: number = 0): Promise<Trip[]> {
     return await db
       .select()
       .from(trips)
       .where(eq(trips.daycareId, daycareId))
-      .orderBy(trips.date);
+      .orderBy(trips.date)
+      .limit(limit)
+      .offset(offset);
   }
 
   async getAllTrips(): Promise<Trip[]> {
@@ -666,12 +755,14 @@ export class DatabaseStorage implements IStorage {
     await db.delete(guardians).where(eq(guardians.childId, childId));
   }
 
-  async getAbsences(daycareId: number): Promise<Absence[]> {
+  async getAbsences(daycareId: number, limit: number = LIST_LIMITS.absences, offset: number = 0): Promise<Absence[]> {
     return await db
       .select()
       .from(absences)
       .where(eq(absences.daycareId, daycareId))
-      .orderBy(desc(absences.date));
+      .orderBy(desc(absences.date))
+      .limit(limit)
+      .offset(offset);
   }
 
   async getAllAbsences(): Promise<Absence[]> {
@@ -710,7 +801,7 @@ export class DatabaseStorage implements IStorage {
     return absence;
   }
 
-  async getMessages(userId: number, daycareId: number): Promise<Message[]> {
+  async getMessages(userId: number, daycareId: number, limit: number = LIST_LIMITS.messages, offset: number = 0): Promise<Message[]> {
     return await db
       .select()
       .from(messages)
@@ -723,7 +814,14 @@ export class DatabaseStorage implements IStorage {
           )
         )
       )
-      .orderBy(desc(messages.createdAt));
+      .orderBy(desc(messages.createdAt))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async getMessageById(id: number): Promise<Message | undefined> {
+    const [message] = await db.select().from(messages).where(eq(messages.id, id)).limit(1);
+    return message || undefined;
   }
 
   async getConversation(userId: number, otherUserId: number): Promise<Message[]> {
@@ -806,17 +904,31 @@ export class DatabaseStorage implements IStorage {
     await db.delete(documents).where(eq(documents.id, id));
   }
 
-  async getNotifications(userId: number): Promise<Notification[]> {
+  async getNotifications(userId: number, limit: number = LIST_LIMITS.notifications, offset: number = 0): Promise<Notification[]> {
     return await db
       .select()
       .from(notifications)
       .where(eq(notifications.userId, userId))
-      .orderBy(desc(notifications.createdAt));
+      .orderBy(desc(notifications.createdAt))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async getNotificationById(id: number): Promise<Notification | undefined> {
+    const [notification] = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.id, id))
+      .limit(1);
+    return notification || undefined;
   }
 
   async getUnreadNotificationCount(userId: number): Promise<number> {
-    const unread = await db
-      .select()
+    // The notification bell polls this every 30 seconds for every signed-in user,
+    // making it the most frequently executed query in the app. Let the database
+    // return the number instead of shipping every unread row back to count them.
+    const [row] = await db
+      .select({ total: count() })
       .from(notifications)
       .where(
         and(
@@ -824,7 +936,7 @@ export class DatabaseStorage implements IStorage {
           eq(notifications.read, false)
         )
       );
-    return unread.length;
+    return row?.total ?? 0;
   }
 
   async createNotification(insertNotification: InsertNotification): Promise<Notification> {
@@ -833,6 +945,19 @@ export class DatabaseStorage implements IStorage {
       .values(insertNotification)
       .returning();
     return notification;
+  }
+
+  /**
+   * Insert many notifications in one statement.
+   *
+   * Notification fan-out (a new trip, a new entry, a reported absence) previously
+   * inserted one row at a time in a loop, so announcing a trip to a daycare with
+   * 150 guardians cost 150 sequential round trips. Returns the number inserted.
+   */
+  async createNotifications(list: InsertNotification[]): Promise<number> {
+    if (list.length === 0) return 0;
+    const inserted = await db.insert(notifications).values(list).returning({ id: notifications.id });
+    return inserted.length;
   }
 
   async markNotificationAsRead(notificationId: number): Promise<void> {
@@ -847,6 +972,24 @@ export class DatabaseStorage implements IStorage {
       .update(notifications)
       .set({ read: true })
       .where(eq(notifications.userId, userId));
+  }
+
+  /**
+   * Every distinct guardian linked to any of the given children, in two queries
+   * rather than two per child.
+   */
+  async getGuardiansForChildren(childIds: number[]): Promise<User[]> {
+    if (childIds.length === 0) return [];
+
+    const guardianRelations = await db
+      .select({ userId: guardians.userId })
+      .from(guardians)
+      .where(inArray(guardians.childId, childIds));
+
+    const userIds = Array.from(new Set(guardianRelations.map((g) => g.userId)));
+    if (userIds.length === 0) return [];
+
+    return await db.select().from(users).where(inArray(users.id, userIds));
   }
 
   async getGuardiansForChild(childId: number): Promise<User[]> {
@@ -1099,72 +1242,85 @@ export class DatabaseStorage implements IStorage {
       guardianCount: number;
     }[];
   }> {
-    const allDaycares = await this.getAllDaycares();
     const today = new Date().toISOString().split('T')[0];
-    
+
+    // Counted with GROUP BY aggregates rather than one set of queries per daycare.
+    // The previous version issued five SELECT * per daycare and counted the rows in
+    // JavaScript, so both the query count and the memory used grew with the number
+    // of daycares. This is a fixed five queries no matter how many there are, and
+    // the database returns counts instead of rows.
+    const [allDaycares, childRows, userRows, tripRows, absenceRows] = await Promise.all([
+      this.getAllDaycares(),
+      db
+        .select({ daycareId: children.daycareId, total: count() })
+        .from(children)
+        .groupBy(children.daycareId),
+      db
+        .select({ daycareId: users.daycareId, role: users.role, total: count() })
+        .from(users)
+        .where(inArray(users.role, ['staff', 'daycareleader', 'guardian']))
+        .groupBy(users.daycareId, users.role),
+      db
+        .select({ daycareId: trips.daycareId, total: count() })
+        .from(trips)
+        .groupBy(trips.daycareId),
+      db
+        .select({ daycareId: absences.daycareId, total: count() })
+        .from(absences)
+        .where(eq(absences.date, today))
+        .groupBy(absences.daycareId),
+    ]);
+
+    const childrenByDaycare = new Map<number, number>();
+    for (const row of childRows) {
+      if (row.daycareId !== null) childrenByDaycare.set(row.daycareId, row.total);
+    }
+
+    const staffByDaycare = new Map<number, number>();
+    const guardiansByDaycare = new Map<number, number>();
+    for (const row of userRows) {
+      if (row.daycareId === null) continue;
+      const target = row.role === 'guardian' ? guardiansByDaycare : staffByDaycare;
+      target.set(row.daycareId, (target.get(row.daycareId) ?? 0) + row.total);
+    }
+
+    const tripsByDaycare = new Map<number, number>();
+    for (const row of tripRows) {
+      if (row.daycareId !== null) tripsByDaycare.set(row.daycareId, row.total);
+    }
+
+    const absencesTodayByDaycare = new Map<number, number>();
+    for (const row of absenceRows) {
+      if (row.daycareId !== null) absencesTodayByDaycare.set(row.daycareId, row.total);
+    }
+
     let totalChildren = 0;
     let totalStaff = 0;
     let totalGuardians = 0;
     let totalTrips = 0;
     let totalAbsencesToday = 0;
-    
-    const daycareStats = await Promise.all(
-      allDaycares.map(async (daycare) => {
-        const daycareChildren = await db
-          .select()
-          .from(children)
-          .where(eq(children.daycareId, daycare.id));
-        
-        const daycareStaff = await db
-          .select()
-          .from(users)
-          .where(
-            and(
-              eq(users.daycareId, daycare.id),
-              or(eq(users.role, 'staff'), eq(users.role, 'daycareleader'))
-            )
-          );
-        
-        const daycareGuardians = await db
-          .select()
-          .from(users)
-          .where(
-            and(
-              eq(users.daycareId, daycare.id),
-              eq(users.role, 'guardian')
-            )
-          );
-        
-        const daycareTrips = await db
-          .select()
-          .from(trips)
-          .where(eq(trips.daycareId, daycare.id));
-        
-        const todayAbsences = await db
-          .select()
-          .from(absences)
-          .where(
-            and(
-              eq(absences.daycareId, daycare.id),
-              eq(absences.date, today)
-            )
-          );
-        
-        totalChildren += daycareChildren.length;
-        totalStaff += daycareStaff.length;
-        totalGuardians += daycareGuardians.length;
-        totalTrips += daycareTrips.length;
-        totalAbsencesToday += todayAbsences.length;
-        
-        return {
-          daycareId: daycare.id,
-          daycareName: daycare.name,
-          childrenCount: daycareChildren.length,
-          staffCount: daycareStaff.length,
-          guardianCount: daycareGuardians.length,
-        };
-      })
-    );
+
+    // Totals are accumulated over allDaycares, matching the previous behaviour:
+    // rows pointing at a daycare that no longer exists are not counted.
+    const daycareStats = allDaycares.map((daycare) => {
+      const childrenCount = childrenByDaycare.get(daycare.id) ?? 0;
+      const staffCount = staffByDaycare.get(daycare.id) ?? 0;
+      const guardianCount = guardiansByDaycare.get(daycare.id) ?? 0;
+
+      totalChildren += childrenCount;
+      totalStaff += staffCount;
+      totalGuardians += guardianCount;
+      totalTrips += tripsByDaycare.get(daycare.id) ?? 0;
+      totalAbsencesToday += absencesTodayByDaycare.get(daycare.id) ?? 0;
+
+      return {
+        daycareId: daycare.id,
+        daycareName: daycare.name,
+        childrenCount,
+        staffCount,
+        guardianCount,
+      };
+    });
     
     return {
       totalDaycares: allDaycares.length,
@@ -1198,97 +1354,112 @@ export class DatabaseStorage implements IStorage {
     const todayDate = new Date();
     todayDate.setHours(0, 0, 0, 0);
     
-    const daycareChildren = await db
-      .select()
-      .from(children)
-      .where(eq(children.daycareId, daycareId));
-    
-    const daycareStaff = await db
-      .select()
-      .from(users)
-      .where(
-        and(
-          eq(users.daycareId, daycareId),
-          or(eq(users.role, 'staff'), eq(users.role, 'daycareleader'))
+    // This powers the dashboard, so it runs on nearly every sign-in. Every figure
+    // below is a count, so the database computes them; previously each one pulled
+    // the full set of matching rows back only to read their .length. The queries
+    // are independent, so they also run concurrently rather than one after another.
+    const [
+      childrenCountRows,
+      staffCountRows,
+      guardianCountRows,
+      todayAbsenceRows,
+      entryBreakdownRows,
+      activeTripRows,
+      activeFormRows,
+    ] = await Promise.all([
+      db
+        .select({ total: count() })
+        .from(children)
+        .where(eq(children.daycareId, daycareId)),
+      db
+        .select({ total: count() })
+        .from(users)
+        .where(
+          and(
+            eq(users.daycareId, daycareId),
+            or(eq(users.role, 'staff'), eq(users.role, 'daycareleader'))
+          )
+        ),
+      db
+        .select({ total: count() })
+        .from(users)
+        .where(
+          and(
+            eq(users.daycareId, daycareId),
+            eq(users.role, 'guardian')
+          )
+        ),
+      db
+        .select({ total: count() })
+        .from(absences)
+        .where(
+          and(
+            eq(absences.daycareId, daycareId),
+            eq(absences.date, today)
+          )
+        ),
+      // One grouped query replaces fetching today's entries and filtering by type
+      // five times in JavaScript.
+      db
+        .select({ type: entries.type, total: count() })
+        .from(entries)
+        .innerJoin(children, eq(entries.childId, children.id))
+        .where(
+          and(
+            eq(children.daycareId, daycareId),
+            gte(entries.timestamp, todayDate)
+          )
         )
-      );
+        .groupBy(entries.type),
+      db
+        .select({ total: count() })
+        .from(trips)
+        .where(
+          and(
+            eq(trips.daycareId, daycareId),
+            gte(trips.date, today)
+          )
+        ),
+      db
+        .select({ total: count() })
+        .from(forms)
+        .where(
+          and(
+            eq(forms.daycareId, daycareId),
+            eq(forms.isActive, true)
+          )
+        ),
+    ]);
     
-    const daycareGuardians = await db
-      .select()
-      .from(users)
-      .where(
-        and(
-          eq(users.daycareId, daycareId),
-          eq(users.role, 'guardian')
-        )
-      );
-    
-    const todayAbsences = await db
-      .select()
-      .from(absences)
-      .where(
-        and(
-          eq(absences.daycareId, daycareId),
-          eq(absences.date, today)
-        )
-      );
-    
-    const todayEntries = await db
-      .select()
-      .from(entries)
-      .leftJoin(children, eq(entries.childId, children.id))
-      .where(
-        and(
-          eq(children.daycareId, daycareId),
-          gte(entries.timestamp, todayDate)
-        )
-      )
-      .then(rows => rows.map(row => row.entries));
-    
+    const countsByEntryType = new Map(entryBreakdownRows.map((row) => [row.type, row.total]));
     const entryBreakdown = {
-      sleep: todayEntries.filter(e => e.type === 'sleep').length,
-      meal: todayEntries.filter(e => e.type === 'meal').length,
-      activity: todayEntries.filter(e => e.type === 'activity').length,
-      arrival: todayEntries.filter(e => e.type === 'arrival').length,
-      mood: todayEntries.filter(e => e.type === 'mood').length,
+      sleep: countsByEntryType.get('sleep') ?? 0,
+      meal: countsByEntryType.get('meal') ?? 0,
+      activity: countsByEntryType.get('activity') ?? 0,
+      arrival: countsByEntryType.get('arrival') ?? 0,
+      mood: countsByEntryType.get('mood') ?? 0,
     };
-    
-    const activeTripsResult = await db
-      .select()
-      .from(trips)
-      .where(
-        and(
-          eq(trips.daycareId, daycareId),
-          gte(trips.date, today)
-        )
-      );
-    
-    const activeForms = await db
-      .select()
-      .from(forms)
-      .where(
-        and(
-          eq(forms.daycareId, daycareId),
-          eq(forms.isActive, true)
-        )
-      );
-    
-    const childrenCount = daycareChildren.length;
-    const absencesToday = todayAbsences.length;
+
+    // entriesToday counts every entry logged today, including types absent from the
+    // breakdown above, so it sums the grouped rows rather than the five named ones.
+    const entriesToday = entryBreakdownRows.reduce((sum, row) => sum + row.total, 0);
+
+    const childrenCount = childrenCountRows[0]?.total ?? 0;
+    const absencesToday = todayAbsenceRows[0]?.total ?? 0;
     const attendanceRate = childrenCount > 0 
       ? Math.round(((childrenCount - absencesToday) / childrenCount) * 100) 
       : 100;
     
     return {
       childrenCount,
-      staffCount: daycareStaff.length,
-      guardianCount: daycareGuardians.length,
+      staffCount: staffCountRows[0]?.total ?? 0,
+      guardianCount: guardianCountRows[0]?.total ?? 0,
       absencesToday,
       attendanceRate,
-      entriesToday: todayEntries.length,
+      entriesToday,
       entryBreakdown,
-      activeTrips: activeTripsResult.length,
-      pendingForms: activeForms.length,
+      activeTrips: activeTripRows[0]?.total ?? 0,
+      pendingForms: activeFormRows[0]?.total ?? 0,
     };
   }
 
@@ -1696,30 +1867,40 @@ export class DatabaseStorage implements IStorage {
     const userChildren = await this.getChildrenByGuardian(userId);
     const childIds = userChildren.map(c => c.id);
     
-    // Get entries for these children
-    let userEntries: Entry[] = [];
-    for (const childId of childIds) {
-      const childEntries = await this.getEntriesByChild(childId);
-      userEntries = [...userEntries, ...childEntries];
-    }
-    
-    // Get trip responses by this guardian
-    const userTripResponses = await this.getTripResponsesByGuardian(userId);
-    
-    // Get messages sent or received by this user
-    const userMessages = user.daycareId 
-      ? await this.getMessages(userId, user.daycareId)
-      : [];
-    
-    // Get absences for these children
-    let userAbsences: Absence[] = [];
-    for (const childId of childIds) {
-      const childAbsences = await this.getAbsencesByChild(childId);
-      userAbsences = [...userAbsences, ...childAbsences];
-    }
-    
-    // Get form submissions by this user
-    const userFormSubmissions = await this.getFormSubmissionsByUser(userId);
+    // A GDPR subject access request must be complete, so these queries deliberately
+    // bypass the LIST_LIMITS caps that the interactive endpoints use. One query per
+    // table over all of the guardian's children, rather than one query per child.
+    const [userEntries, userAbsences, userTripResponses, userMessages, userFormSubmissions] =
+      await Promise.all([
+        childIds.length
+          ? db
+              .select()
+              .from(entries)
+              .where(inArray(entries.childId, childIds))
+              .orderBy(desc(entries.timestamp))
+          : Promise.resolve([] as Entry[]),
+        childIds.length
+          ? db
+              .select()
+              .from(absences)
+              .where(inArray(absences.childId, childIds))
+              .orderBy(desc(absences.date))
+          : Promise.resolve([] as Absence[]),
+        this.getTripResponsesByGuardian(userId),
+        user.daycareId
+          ? db
+              .select()
+              .from(messages)
+              .where(
+                and(
+                  eq(messages.daycareId, user.daycareId),
+                  or(eq(messages.senderId, userId), eq(messages.recipientId, userId))
+                )
+              )
+              .orderBy(desc(messages.createdAt))
+          : Promise.resolve([] as Message[]),
+        this.getFormSubmissionsByUser(userId),
+      ]);
     
     return {
       user: safeUser,
@@ -1747,6 +1928,26 @@ export class DatabaseStorage implements IStorage {
       .from(sessionTokens)
       .where(eq(sessionTokens.tokenHash, tokenHash));
     return token || undefined;
+  }
+
+  /**
+   * Resolve the authenticated user and their session token in a single round trip.
+   *
+   * The auth middleware runs on every request, so fetching the user and then the
+   * session token separately doubled the latency floor of the whole API. Joining
+   * them costs one query instead of two; session_tokens.token_hash is unique, so
+   * this matches at most one row.
+   */
+  async getUserBySessionToken(
+    tokenHash: string
+  ): Promise<{ user: User; sessionToken: SessionToken } | undefined> {
+    const [row] = await db
+      .select({ user: users, sessionToken: sessionTokens })
+      .from(sessionTokens)
+      .innerJoin(users, eq(users.id, sessionTokens.userId))
+      .where(eq(sessionTokens.tokenHash, tokenHash))
+      .limit(1);
+    return row || undefined;
   }
   
   async deleteSessionToken(tokenHash: string): Promise<void> {

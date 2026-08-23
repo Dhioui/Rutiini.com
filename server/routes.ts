@@ -1,6 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage, hashEntityId } from "./storage";
+import { readPagination, LIST_LIMITS } from "./pagination";
 import { getCached, setCache, invalidateCache } from "./db";
 import fs from "fs";
 import path from "path";
@@ -79,28 +80,30 @@ async function authenticateToken(req: AuthRequest, res: Response, next: NextFunc
     if (!decoded) {
       return res.status(401).json({ error: 'Invalid token' });
     }
-    
-    const user = await storage.getUser(decoded.userId);
-    
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-    
-    // Validate session token exists (secure logout support)
+
+    // Single round trip: the user row and the session token are fetched together.
+    // This middleware runs on every authenticated request, so the second query was
+    // pure added latency on every call.
     const sessionTokenHashValue = hashSessionToken(token);
-    const sessionToken = await storage.getSessionToken(sessionTokenHashValue);
-    
-    if (!sessionToken) {
+    const session = await storage.getUserBySessionToken(sessionTokenHashValue);
+
+    if (!session) {
       return res.status(401).json({ error: 'Session expired or invalidated' });
     }
-    
+
+    // The JWT and the stored session must refer to the same user. Without this the
+    // token subject is never checked against the session row it was matched to.
+    if (session.user.id !== decoded.userId) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
     // Check if session token has expired
-    if (new Date(sessionToken.expiresAt) < new Date()) {
+    if (new Date(session.sessionToken.expiresAt) < new Date()) {
       await storage.deleteSessionToken(sessionTokenHashValue);
       return res.status(401).json({ error: 'Session expired' });
     }
-    
-    req.user = user;
+
+    req.user = session.user;
     next();
   } catch (error) {
     return res.status(401).json({ error: 'Invalid token' });
@@ -108,6 +111,7 @@ async function authenticateToken(req: AuthRequest, res: Response, next: NextFunc
 }
 
 // Authorization helper: canAccessDaycare is now imported from ./auth
+
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Health check endpoint for monitoring (no auth required)
@@ -742,17 +746,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.json(entries);
       }
       
+      const { limit, offset } = readPagination(req, LIST_LIMITS.entries);
+
       if (user.role === 'staff') {
         // Staff sees all entries in their daycare
         if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
-        const entries = await storage.getEntries(user.daycareId);
+        const entries = await storage.getEntries(user.daycareId, limit, offset);
         return res.json(entries);
       }
       
       if (user.role === 'daycareleader') {
         // Admins see all entries in their daycare
         if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
-        const entries = await storage.getEntries(user.daycareId);
+        const entries = await storage.getEntries(user.daycareId, limit, offset);
         return res.json(entries);
       }
       
@@ -805,16 +811,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Create notifications for guardians
       const guardians = await storage.getGuardiansForChild(parsedChildId);
       
-      for (const guardian of guardians) {
-        await storage.createNotification({
+      await storage.createNotifications(
+        guardians.map((guardian) => ({
           userId: guardian.id,
           daycareId: child.daycareId,
           type: 'entry',
           title: `entry_${type}`,
           message: JSON.stringify({ childName: child.name, entryType: type, value }),
           relatedId: entry.id,
-        });
-      }
+        }))
+      );
       
       await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'entry', entry.id);
       res.json(entry);
@@ -835,6 +841,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
       }
       
+      const { limit: tripLimit, offset: tripOffset } = readPagination(req, LIST_LIMITS.trips);
+
       let trips;
       if (user.role === 'guardian') {
         const children = await storage.getChildrenByGuardian(user.id);
@@ -843,10 +851,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
         
         if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
-        trips = await storage.getTrips(user.daycareId);
+        trips = await storage.getTrips(user.daycareId, tripLimit, tripOffset);
       } else {
         if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
-        trips = await storage.getTrips(user.daycareId);
+        trips = await storage.getTrips(user.daycareId, tripLimit, tripOffset);
       }
       
       // Filter to show only current and future trips
@@ -886,29 +894,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       const trip = await storage.createTrip(validatedData);
       
-      // Create notifications for all guardians in the daycare
+      // Notify every guardian in the daycare. This used to fetch the guardians of
+      // each child in turn and then insert one notification at a time, so a daycare
+      // with 100 children and 150 guardians cost roughly 250 sequential round trips
+      // to create a single trip. It is now three queries plus one bulk insert.
       const allChildren = await storage.getChildren(validatedData.daycareId);
-      const guardianIds: number[] = [];
+      const tripGuardians = await storage.getGuardiansForChildren(allChildren.map((c) => c.id));
+      const guardianIds = tripGuardians.map((g) => g.id);
       
-      for (const child of allChildren) {
-        const childGuardians = await storage.getGuardiansForChild(child.id);
-        childGuardians.forEach(g => {
-          if (!guardianIds.includes(g.id)) {
-            guardianIds.push(g.id);
-          }
-        });
-      }
-      
-      for (const guardianId of guardianIds) {
-        await storage.createNotification({
-          userId: guardianId,
-          daycareId: validatedData.daycareId,
-          type: 'trip',
-          title: 'new_trip',
-          message: JSON.stringify({ tripTitle: trip.title, tripDate: trip.date, tripLocation: trip.location }),
-          relatedId: trip.id,
-        });
-      }
+      await storage.createNotifications(guardianIds.map((guardianId) => ({
+        userId: guardianId,
+        daycareId: validatedData.daycareId,
+        type: 'trip',
+        title: 'new_trip',
+        message: JSON.stringify({ tripTitle: trip.title, tripDate: trip.date, tripLocation: trip.location }),
+        relatedId: trip.id,
+      })));
       
       await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'trip', trip.id);
       res.json(trip);
@@ -1902,6 +1903,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
       
+      const { limit: absenceLimit, offset: absenceOffset } = readPagination(req, LIST_LIMITS.absences);
+
       let absences;
       if (user.role === 'guardian') {
         // Guardians see only absences for their children
@@ -1919,7 +1922,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         absences = allAbsences.flat();
       } else if (user.role === 'daycareleader') {
         // Admins see all absences in their daycare
-        absences = await storage.getAbsences(user.daycareId);
+        absences = await storage.getAbsences(user.daycareId, absenceLimit, absenceOffset);
       } else {
         return res.status(403).json({ error: 'Unauthorized' });
       }
@@ -1983,16 +1986,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Create notifications for staff/admin when absence is reported
       const staff = await storage.getStaffByDaycare(validatedData.daycareId);
       
-      for (const staffMember of staff) {
-        await storage.createNotification({
+      await storage.createNotifications(
+        staff.map((staffMember) => ({
           userId: staffMember.id,
           daycareId: validatedData.daycareId,
           type: 'absence',
           title: `absence_${validatedData.type}`,
           message: JSON.stringify({ childName: child.name, absenceType: validatedData.type, date: validatedData.date }),
           relatedId: absence.id,
-        });
-      }
+        }))
+      );
       
       await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'absence', absence.id);
       res.json(absence);
@@ -2012,7 +2015,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
-      const messages = await storage.getMessages(user.id, user.daycareId);
+      const { limit: msgLimit, offset: msgOffset } = readPagination(req, LIST_LIMITS.messages);
+      const messages = await storage.getMessages(user.id, user.daycareId, msgLimit, msgOffset);
       
       const enrichedMessages = await Promise.all(
         messages.map(async (msg) => {
@@ -2143,11 +2147,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const messageId = parseInt(id);
       
-      // Fetch the message to verify the caller is the recipient
-      const messages = await storage.getMessages(user.id, user.daycareId);
-      const message = messages.find(m => m.id === messageId);
+      // Fetch the message to verify the caller is the recipient.
+      // Looked up by id rather than by scanning the caller's message list: the list
+      // is capped, so a message older than the cap could not be marked read at all.
+      const message = await storage.getMessageById(messageId);
       
-      if (!message) {
+      if (!message || message.daycareId !== user.daycareId) {
         return res.status(404).json({ error: 'Message not found' });
       }
       
@@ -2214,7 +2219,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/notifications', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
       const user = req.user!;
-      const notifications = await storage.getNotifications(user.id);
+      const { limit: notifLimit, offset: notifOffset } = readPagination(req, LIST_LIMITS.notifications);
+      const notifications = await storage.getNotifications(user.id, notifLimit, notifOffset);
       res.json(notifications);
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch notifications' });
@@ -2237,11 +2243,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const notificationId = parseInt(id);
       
-      // Verify the notification belongs to the user
-      const notifications = await storage.getNotifications(user.id);
-      const notification = notifications.find(n => n.id === notificationId);
+      // Verify the notification belongs to the user.
+      // Looked up by id rather than by scanning the caller's notification list: the
+      // list is capped, so an older notification could not be marked read at all.
+      const notification = await storage.getNotificationById(notificationId);
       
-      if (!notification) {
+      if (!notification || notification.userId !== user.id) {
         return res.status(404).json({ error: 'Notification not found' });
       }
       
