@@ -1,0 +1,9 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "poHOKCRZIc3XMW8St3lD5"
+uri = "file://rutiini-audit-package.zip"
+type = "unspecified"
+title = "Rutiini auditointipaketti"
+description = "Koonti server-, client-, shared-, android- ja ios-lähdekoodista sekä pyydetyistä juuriasetuksista. MainActivity, allekirjoitusavaimet, local.properties ja build-riippuvuudet on jätetty pois."
