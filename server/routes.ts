@@ -1,0 +1,3198 @@
+import type { Express, Request, Response, NextFunction } from "express";
+import { createServer, type Server } from "http";
+import { storage, hashEntityId } from "./storage";
+import { getCached, setCache, invalidateCache } from "./db";
+import fs from "fs";
+import path from "path";
+import { loginSchema, superAdminLoginSchema, insertChildSchema, insertEntrySchema, insertTripSchema, insertTripResponseSchema, createUserSchema, insertDaycareSchema, insertAbsenceSchema, insertMessageSchema, insertDocumentSchema, insertDaycareGroupSchema, changePasswordSchema, insertFormSchema, insertFormSubmissionSchema, insertChildConsentSchema, insertMunicipalitySchema, updateMunicipalitySchema } from "@shared/schema";
+import type { User, Child, MealMenu } from "@shared/schema";
+import { getTodaysMenu, fetchAndSaveMenu, fetchAndSaveMenuForDaycare, dietInfoLegend } from "./menuScraper";
+import {
+  canAccessDaycare,
+  hasRole,
+  canViewPersonalData,
+  canViewChildren,
+  canCreateChildren,
+  canAccessEntries,
+  canCreateEntries,
+  canReportAbsences,
+  canManageUsers,
+  canExportData,
+  canManageDaycares,
+  canViewAuditLogs,
+  canManageForms,
+  canSubmitForms,
+  hashPassword,
+  verifyPassword,
+  generateToken,
+  verifyToken,
+  hashSessionToken,
+  generateResetToken,
+  isAccountLocked,
+  calculateLockoutExpiration,
+  isStrongPassword,
+  MAX_FAILED_ATTEMPTS,
+} from "./auth";
+
+// GDPR compliance: Super admin cannot access personal data
+const GDPR_DENIAL_MESSAGE = "Sinulla ei ole oikeuksia nähdä tätä sisältöä (GDPR)";
+
+// Helper to log audit events (no personal data)
+async function logAudit(
+  actorId: number | null,
+  actorRole: string,
+  daycareId: number | null,
+  action: 'CREATE' | 'UPDATE' | 'DELETE' | 'LOGIN' | 'LOGOUT' | 'VIEW' | 'ACCESS_DENIED',
+  entityType: string,
+  entityId?: number | string,
+  metadata?: Record<string, any>
+) {
+  try {
+    await storage.createAuditLog({
+      actorId,
+      actorRole,
+      daycareId,
+      action,
+      entityType,
+      entityIdHash: entityId ? hashEntityId(entityId) : undefined,
+      metadata,
+    });
+  } catch (e) {
+    console.error('Failed to log audit event:', e);
+  }
+}
+
+interface AuthRequest extends Request {
+  user?: User;
+}
+
+async function authenticateToken(req: AuthRequest, res: Response, next: NextFunction) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+
+  try {
+    const decoded = verifyToken(token);
+    if (!decoded) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    
+    const user = await storage.getUser(decoded.userId);
+    
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    
+    // Validate session token exists (secure logout support)
+    const sessionTokenHashValue = hashSessionToken(token);
+    const sessionToken = await storage.getSessionToken(sessionTokenHashValue);
+    
+    if (!sessionToken) {
+      return res.status(401).json({ error: 'Session expired or invalidated' });
+    }
+    
+    // Check if session token has expired
+    if (new Date(sessionToken.expiresAt) < new Date()) {
+      await storage.deleteSessionToken(sessionTokenHashValue);
+      return res.status(401).json({ error: 'Session expired' });
+    }
+    
+    req.user = user;
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
+// Authorization helper: canAccessDaycare is now imported from ./auth
+
+export async function registerRoutes(app: Express): Promise<Server> {
+  // Health check endpoint for monitoring (no auth required)
+  app.get('/api/health', async (req: Request, res: Response) => {
+    try {
+      // Basic health check - verify database connection
+      const dbHealthy = await storage.checkDatabaseConnection();
+      
+      const healthStatus = {
+        status: dbHealthy ? 'ok' : 'degraded',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        version: process.env.npm_package_version || '1.0.0',
+        database: dbHealthy ? 'connected' : 'disconnected',
+      };
+      
+      const statusCode = dbHealthy ? 200 : 503;
+      res.status(statusCode).json(healthStatus);
+    } catch (error) {
+      res.status(503).json({
+        status: 'error',
+        timestamp: new Date().toISOString(),
+        error: 'Health check failed',
+      });
+    }
+  });
+
+  // Kubernetes/Load Balancer standard health check endpoint (no auth required)
+  // Returns 200 OK if app is running, 503 if database is down
+  app.get('/healthz', async (req: Request, res: Response) => {
+    try {
+      const dbHealthy = await storage.checkDatabaseConnection();
+      if (dbHealthy) {
+        res.status(200).send('OK');
+      } else {
+        res.status(503).send('Database unavailable');
+      }
+    } catch (error) {
+      res.status(503).send('Service unavailable');
+    }
+  });
+
+  // Liveness probe - simple check if app is running (no auth required)
+  app.get('/livez', (req: Request, res: Response) => {
+    res.status(200).send('OK');
+  });
+
+  // Readiness probe - checks if app is ready to serve traffic (no auth required)
+  app.get('/readyz', async (req: Request, res: Response) => {
+    try {
+      const dbHealthy = await storage.checkDatabaseConnection();
+      if (dbHealthy) {
+        res.status(200).send('OK');
+      } else {
+        res.status(503).send('Not ready');
+      }
+    } catch (error) {
+      res.status(503).send('Not ready');
+    }
+  });
+
+  // Version info endpoint (no auth required)
+  app.get('/api/version', (req: Request, res: Response) => {
+    res.json({
+      version: '1.5.0',
+      build: '5',
+      buildDate: '2024-12-04',
+      environment: process.env.NODE_ENV || 'development',
+    });
+  });
+
+  // Public API endpoints for municipality-based login flow (no auth required)
+  // GET /api/public/municipalities - returns list of unique municipalities (cached 5 min)
+  app.get('/api/public/municipalities', async (req: Request, res: Response) => {
+    try {
+      const cacheKey = 'public:municipalities';
+      const cached = getCached<string[]>(cacheKey);
+      if (cached) {
+        res.setHeader('X-Cache', 'HIT');
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        return res.json(cached);
+      }
+      
+      const municipalities = await storage.getUniqueMunicipalities();
+      setCache(cacheKey, municipalities, 5 * 60 * 1000); // 5 min cache
+      res.setHeader('X-Cache', 'MISS');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.json(municipalities);
+    } catch (error) {
+      console.error('Failed to fetch municipalities:', error);
+      res.status(500).json({ error: 'Failed to fetch municipalities' });
+    }
+  });
+
+  // GET /api/public/daycares?municipality=Helsinki - returns daycares for a municipality (cached 5 min)
+  app.get('/api/public/daycares', async (req: Request, res: Response) => {
+    try {
+      const { municipality } = req.query;
+      
+      if (!municipality || typeof municipality !== 'string') {
+        return res.status(400).json({ error: 'Municipality parameter required' });
+      }
+      
+      const cacheKey = `public:daycares:${municipality}`;
+      const cached = getCached<Array<{id: number; name: string; code: string}>>(cacheKey);
+      if (cached) {
+        res.setHeader('X-Cache', 'HIT');
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        return res.json(cached);
+      }
+      
+      const daycares = await storage.getDaycaresByMunicipality(municipality);
+      const publicData = daycares.map(d => ({
+        id: d.id,
+        name: d.name,
+        code: d.code,
+      }));
+      setCache(cacheKey, publicData, 5 * 60 * 1000); // 5 min cache
+      res.setHeader('X-Cache', 'MISS');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.json(publicData);
+    } catch (error) {
+      console.error('Failed to fetch daycares by municipality:', error);
+      res.status(500).json({ error: 'Failed to fetch daycares' });
+    }
+  });
+
+  // Public routes
+  app.get('/privacy-policy', (req: Request, res: Response) => {
+    try {
+      // Try multiple possible paths for reliability in dev and production
+      const possiblePaths = [
+        path.resolve(import.meta.dirname, '../dist/public/privacy-policy.html'),
+        path.resolve(process.cwd(), 'dist/public/privacy-policy.html'),
+        path.join(process.cwd(), 'dist', 'public', 'privacy-policy.html'),
+      ];
+      
+      let filePath: string | null = null;
+      for (const tryPath of possiblePaths) {
+        if (fs.existsSync(tryPath)) {
+          filePath = tryPath;
+          break;
+        }
+      }
+      
+      if (!filePath) {
+        throw new Error('Privacy policy file not found in any expected location');
+      }
+      
+      const content = fs.readFileSync(filePath, 'utf-8');
+      res.set('Content-Type', 'text/html');
+      res.send(content);
+    } catch (error) {
+      console.error('Privacy policy error:', error);
+      res.status(500).send('Privacy policy not found');
+    }
+  });
+
+  app.get('/api/daycares/:code', async (req: Request, res: Response) => {
+    try {
+      const { code } = req.params;
+      const daycare = await storage.getDaycareByCode(code.toLowerCase());
+      
+      if (!daycare) {
+        return res.status(404).json({ error: 'Daycare not found' });
+      }
+      
+      res.json({
+        id: daycare.id,
+        name: daycare.name,
+        code: daycare.code
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Server error' });
+    }
+  });
+
+  app.post('/api/auth/login/:role', async (req: Request, res: Response) => {
+    try {
+      const { role } = req.params;
+      const validatedData = loginSchema.parse(req.body);
+      
+      // Validate daycare code
+      const daycare = await storage.getDaycareByCode(validatedData.daycareCode);
+      if (!daycare) {
+        return res.status(401).json({ error: 'Invalid daycare code' });
+      }
+      
+      const user = await storage.getUserByEmail(validatedData.email);
+      
+      if (!user || user.role !== role) {
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+      
+      // Verify user belongs to this daycare
+      if (user.daycareId !== daycare.id) {
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+      
+      // VAHTI: Check if account is locked
+      const isLocked = await storage.isUserLocked(user.id);
+      if (isLocked) {
+        await logAudit(user.id, user.role, user.daycareId, 'ACCESS_DENIED', 'session', undefined, { reason: 'account_locked' });
+        return res.status(423).json({ error: 'Account is temporarily locked. Please try again later.' });
+      }
+      
+      const isValidPassword = await verifyPassword(validatedData.password, user.passwordHash);
+      
+      if (!isValidPassword) {
+        // VAHTI: Increment failed login attempts
+        const failedAttempts = await storage.incrementFailedLoginAttempts(user.id);
+        await logAudit(user.id, user.role, user.daycareId, 'ACCESS_DENIED', 'session', undefined, { reason: 'invalid_password', failedAttempts });
+        
+        // Lock account after MAX_FAILED_ATTEMPTS (15 minutes)
+        if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
+          const lockUntil = calculateLockoutExpiration();
+          await storage.lockUserAccount(user.id, lockUntil);
+          await logAudit(user.id, user.role, user.daycareId, 'UPDATE', 'account_lock', undefined, { lockUntil: lockUntil.toISOString() });
+          return res.status(423).json({ error: 'Account locked due to too many failed attempts. Please try again in 15 minutes.' });
+        }
+        
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+      
+      // Reset failed login attempts on successful login
+      await storage.resetFailedLoginAttempts(user.id);
+      
+      // Generate JWT token (7 days = 604800 seconds)
+      const token = generateToken(user.id, 604800);
+      
+      // Create session token for secure logout
+      const tokenHash = hashSessionToken(token);
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+      await storage.createSessionToken(user.id, tokenHash, expiresAt);
+      
+      // Update last login timestamp
+      await storage.updateLastLogin(user.id);
+      
+      // Audit: Log successful login
+      await logAudit(user.id, user.role, user.daycareId, 'LOGIN', 'session', undefined, { ipAddress: req.ip });
+      
+      res.json({ 
+        token, 
+        user: { 
+          id: user.id, 
+          name: user.name, 
+          email: user.email, 
+          role: user.role,
+          daycareId: user.daycareId,
+          passwordNeedsReset: user.passwordNeedsReset
+        },
+        daycare: {
+          id: daycare.id,
+          name: daycare.name,
+          code: daycare.code
+        }
+      });
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.post('/api/auth/super-admin/login', async (req: Request, res: Response) => {
+    try {
+      const validatedData = superAdminLoginSchema.parse(req.body);
+      
+      const user = await storage.getUserByEmail(validatedData.email);
+      
+      if (!user || user.role !== 'super_admin') {
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+      
+      // VAHTI: Check if account is locked
+      const isLocked = await storage.isUserLocked(user.id);
+      if (isLocked) {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'session', undefined, { reason: 'account_locked' });
+        return res.status(423).json({ error: 'Account is temporarily locked. Please try again later.' });
+      }
+      
+      const isValidPassword = await verifyPassword(validatedData.password, user.passwordHash);
+      
+      if (!isValidPassword) {
+        // VAHTI: Increment failed login attempts
+        const failedAttempts = await storage.incrementFailedLoginAttempts(user.id);
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'session', undefined, { reason: 'invalid_password', failedAttempts });
+        
+        // Lock account after MAX_FAILED_ATTEMPTS (15 minutes)
+        if (failedAttempts >= MAX_FAILED_ATTEMPTS) {
+          const lockUntil = calculateLockoutExpiration();
+          await storage.lockUserAccount(user.id, lockUntil);
+          await logAudit(user.id, user.role, null, 'UPDATE', 'account_lock', undefined, { lockUntil: lockUntil.toISOString() });
+          return res.status(423).json({ error: 'Account locked due to too many failed attempts. Please try again in 15 minutes.' });
+        }
+        
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+      
+      // Reset failed login attempts on successful login
+      await storage.resetFailedLoginAttempts(user.id);
+      
+      // Generate JWT token (7 days = 604800 seconds)
+      const token = generateToken(user.id, 604800);
+      
+      // Create session token for secure logout
+      const tokenHash = hashSessionToken(token);
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+      await storage.createSessionToken(user.id, tokenHash, expiresAt);
+      
+      // Update last login timestamp
+      await storage.updateLastLogin(user.id);
+      
+      // Audit: Log super admin login
+      await logAudit(user.id, user.role, null, 'LOGIN', 'session', undefined, { ipAddress: req.ip });
+      
+      res.json({ 
+        token, 
+        user: { 
+          id: user.id, 
+          name: user.name, 
+          email: user.email, 
+          role: user.role,
+          daycareId: user.daycareId,
+          passwordNeedsReset: user.passwordNeedsReset
+        }
+      });
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  // Logout endpoint - invalidates session token
+  app.post('/api/auth/logout', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const authHeader = req.headers['authorization'];
+      const token = authHeader && authHeader.split(' ')[1];
+      
+      if (token) {
+        const tokenHash = hashSessionToken(token);
+        await storage.deleteSessionToken(tokenHash);
+      }
+      
+      // Audit: Log logout
+      await logAudit(user.id, user.role, user.daycareId, 'LOGOUT', 'session');
+      
+      res.json({ success: true, message: 'Logged out successfully' });
+    } catch (error) {
+      res.status(500).json({ error: 'Logout failed' });
+    }
+  });
+
+  // Admin unlock account endpoint
+  app.post('/api/admin/users/:userId/unlock', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const admin = req.user!;
+      const { userId } = req.params;
+      
+      // Only admins and super admins can unlock accounts
+      if (admin.role !== 'daycareleader' && admin.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      
+      const targetUser = await storage.getUser(parseInt(userId));
+      if (!targetUser) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Daycare leaders can only unlock users in their daycare
+      if (admin.role === 'daycareleader' && targetUser.daycareId !== admin.daycareId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      
+      await storage.unlockUserAccount(targetUser.id);
+      
+      await logAudit(admin.id, admin.role, admin.daycareId, 'UPDATE', 'account_unlock', targetUser.id);
+      
+      res.json({ success: true, message: 'Account unlocked successfully' });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to unlock account' });
+    }
+  });
+
+  // Password change endpoint (for first login or voluntary change)
+  app.post('/api/auth/change-password', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const validatedData = changePasswordSchema.parse(req.body);
+      
+      // Verify current password
+      const isValidPassword = await verifyPassword(validatedData.currentPassword, user.passwordHash);
+      if (!isValidPassword) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+      
+      // Security: Ensure new password is different from current
+      const isSamePassword = await verifyPassword(validatedData.newPassword, user.passwordHash);
+      if (isSamePassword) {
+        return res.status(400).json({ error: 'New password must be different from current password' });
+      }
+      
+      // Hash new password
+      const newPasswordHash = await hashPassword(validatedData.newPassword);
+      
+      // Update password and clear passwordNeedsReset flag
+      await storage.updateUserPassword(user.id, newPasswordHash);
+      
+      await logAudit(user.id, user.role, user.daycareId, 'UPDATE', 'password');
+      
+      res.json({ success: true, message: 'Password changed successfully' });
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  // Password reset request (generates token)
+  app.post('/api/auth/reset-password/request', async (req: Request, res: Response) => {
+    try {
+      const { email, daycareCode } = req.body;
+      
+      if (!email || !daycareCode) {
+        return res.status(400).json({ error: 'Email and daycare code required' });
+      }
+      
+      // Validate daycare
+      const daycare = await storage.getDaycareByCode(daycareCode);
+      if (!daycare) {
+        // Don't reveal whether daycare exists
+        return res.json({ success: true, message: 'If the account exists, a reset link has been sent' });
+      }
+      
+      const user = await storage.getUserByEmail(email);
+      
+      // Don't reveal whether user exists
+      if (!user || user.daycareId !== daycare.id) {
+        return res.json({ success: true, message: 'If the account exists, a reset link has been sent' });
+      }
+      
+      // Generate reset token
+      const resetToken = generateResetToken();
+      const resetTokenHash = hashSessionToken(resetToken);
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+      
+      await storage.setPasswordResetToken(user.id, resetTokenHash, expiresAt);
+      
+      // In production, this would send an email with the reset link
+      // For development, we log the token (never do this in production!)
+      console.log(`[DEV] Password reset token for ${email}: ${resetToken}`);
+      
+      await logAudit(null, 'system', user.daycareId, 'CREATE', 'password_reset_token');
+      
+      res.json({ success: true, message: 'If the account exists, a reset link has been sent' });
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  // Password reset with token
+  app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
+    try {
+      const { token, newPassword } = req.body;
+      
+      if (!token || !newPassword) {
+        return res.status(400).json({ error: 'Token and new password required' });
+      }
+      
+      if (newPassword.length < 8) {
+        return res.status(400).json({ error: 'Password must be at least 8 characters' });
+      }
+      
+      // Hash the provided token to compare with stored hash
+      const tokenHash = hashSessionToken(token);
+      
+      const user = await storage.getUserByResetToken(tokenHash);
+      
+      if (!user) {
+        return res.status(400).json({ error: 'Invalid or expired reset token' });
+      }
+      
+      // Check if token is expired
+      if (user.resetTokenExpiresAt && new Date() > user.resetTokenExpiresAt) {
+        await storage.clearPasswordResetToken(user.id);
+        return res.status(400).json({ error: 'Reset token has expired' });
+      }
+      
+      // Hash new password and update
+      const newPasswordHash = await hashPassword(newPassword);
+      await storage.updateUserPassword(user.id, newPasswordHash);
+      
+      await logAudit(user.id, user.role, user.daycareId, 'UPDATE', 'password', undefined, { via: 'reset_token' });
+      
+      res.json({ success: true, message: 'Password has been reset successfully' });
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.get('/api/children', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // GDPR: Super admin cannot access personal data
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'children');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      let children;
+      if (user.role === 'guardian') {
+        // Guardians see only their own children
+        children = await storage.getChildrenByGuardian(user.id);
+      } else if (user.role === 'staff') {
+        // Staff sees all children in their daycare
+        if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+        children = await storage.getChildren(user.daycareId);
+      } else if (user.role === 'daycareleader') {
+        // Daycare leaders see all children in their daycare
+        if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+        children = await storage.getChildren(user.daycareId);
+      } else {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      res.json(children);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch children' });
+    }
+  });
+
+  app.post('/api/children', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // GDPR: Super admin cannot create children (personal data)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'children');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      // RBAC: Only admins can create children
+      // Staff cannot create children as it would bypass group assignment system
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Only administrators can add children' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const validatedData = insertChildSchema.parse({
+        ...req.body,
+        daycareId: user.daycareId,
+      });
+      const child = await storage.createChild(validatedData);
+      
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'child', child.id);
+      res.json(child);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.get('/api/children/:id/entries', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      const childId = parseInt(id);
+      
+      // GDPR: Super admin cannot access personal data
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'entries');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      const child = await storage.getChild(childId);
+      
+      if (!child) {
+        return res.status(404).json({ error: 'Child not found' });
+      }
+      
+      if (user.role === 'guardian') {
+        // Guardians can only access their own children's entries
+        const guardianChildren = await storage.getChildrenByGuardian(user.id);
+        const hasAccess = guardianChildren.some(c => c.id === childId);
+        
+        if (!hasAccess) {
+          return res.status(403).json({ error: 'Unauthorized' });
+        }
+      } else if (user.role === 'staff') {
+        // RBAC: Staff can only access children in their assigned groups
+        if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+        if (!canAccessDaycare(user, child.daycareId)) {
+          return res.status(403).json({ error: 'Unauthorized' });
+        }
+        // Check if child is in staff's assigned groups
+        const staffChildren = await storage.getChildrenByTeacherGroups(user.id);
+        const hasAccess = staffChildren.some(c => c.id === childId);
+        if (!hasAccess) {
+          return res.status(403).json({ error: 'Unauthorized - child not in your assigned groups' });
+        }
+      } else if (user.role === 'daycareleader') {
+        // Admins can access all children in their daycare
+        if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+        if (!canAccessDaycare(user, child.daycareId)) {
+          return res.status(403).json({ error: 'Unauthorized' });
+        }
+      } else {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const entries = await storage.getEntriesByChild(childId);
+      res.json(entries);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch entries' });
+    }
+  });
+
+  app.get('/api/entries', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // GDPR: Super admin cannot access personal data
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'entries');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role === 'guardian') {
+        // Guardians see only entries for their children
+        const children = await storage.getChildrenByGuardian(user.id);
+        const allEntries = await Promise.all(
+          children.map(child => storage.getEntriesByChild(child.id))
+        );
+        const entries = allEntries.flat();
+        return res.json(entries);
+      }
+      
+      if (user.role === 'staff') {
+        // Staff sees all entries in their daycare
+        if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+        const entries = await storage.getEntries(user.daycareId);
+        return res.json(entries);
+      }
+      
+      if (user.role === 'daycareleader') {
+        // Admins see all entries in their daycare
+        if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+        const entries = await storage.getEntries(user.daycareId);
+        return res.json(entries);
+      }
+      
+      return res.status(403).json({ error: 'Unauthorized' });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch entries' });
+    }
+  });
+
+  app.post('/api/entries', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // GDPR: Super admin cannot create entries (personal data)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'entries');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const { childId, type, value, note } = req.body;
+      const parsedChildId = parseInt(childId);
+      
+      const child = await storage.getChild(parsedChildId);
+      
+      if (!child) {
+        return res.status(404).json({ error: 'Child not found' });
+      }
+      
+      if (!canAccessDaycare(user, child.daycareId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      // Staff can create entries for all children in their daycare
+      // (Already verified that child belongs to their daycare via canAccessDaycare check above)
+      
+      const entry = await storage.createEntry({
+        childId: parsedChildId,
+        type,
+        value,
+        note: note || '',
+        staffId: user.id,
+      });
+      
+      // Create notifications for guardians
+      const guardians = await storage.getGuardiansForChild(parsedChildId);
+      
+      for (const guardian of guardians) {
+        await storage.createNotification({
+          userId: guardian.id,
+          daycareId: child.daycareId,
+          type: 'entry',
+          title: `entry_${type}`,
+          message: JSON.stringify({ childName: child.name, entryType: type, value }),
+          relatedId: entry.id,
+        });
+      }
+      
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'entry', entry.id);
+      res.json(entry);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.get('/api/trips', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      // GDPR: Super admin cannot access personal data
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'trips');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      let trips;
+      if (user.role === 'guardian') {
+        const children = await storage.getChildrenByGuardian(user.id);
+        if (children.length === 0) {
+          return res.json([]);
+        }
+        
+        if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+        trips = await storage.getTrips(user.daycareId);
+      } else {
+        if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+        trips = await storage.getTrips(user.daycareId);
+      }
+      
+      // Filter to show only current and future trips
+      const filteredTrips = trips.filter(trip => {
+        const tripDate = new Date(trip.date);
+        tripDate.setHours(0, 0, 0, 0);
+        return tripDate >= today;
+      });
+      
+      res.json(filteredTrips);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch trips' });
+    }
+  });
+
+  app.post('/api/trips', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // GDPR: Super admin cannot create trips (personal data)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'trips');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const validatedData = insertTripSchema.parse({
+        ...req.body,
+        createdBy: user.id,
+        daycareId: user.daycareId,
+      });
+      
+      const trip = await storage.createTrip(validatedData);
+      
+      // Create notifications for all guardians in the daycare
+      const allChildren = await storage.getChildren(validatedData.daycareId);
+      const guardianIds: number[] = [];
+      
+      for (const child of allChildren) {
+        const childGuardians = await storage.getGuardiansForChild(child.id);
+        childGuardians.forEach(g => {
+          if (!guardianIds.includes(g.id)) {
+            guardianIds.push(g.id);
+          }
+        });
+      }
+      
+      for (const guardianId of guardianIds) {
+        await storage.createNotification({
+          userId: guardianId,
+          daycareId: validatedData.daycareId,
+          type: 'trip',
+          title: 'new_trip',
+          message: JSON.stringify({ tripTitle: trip.title, tripDate: trip.date, tripLocation: trip.location }),
+          relatedId: trip.id,
+        });
+      }
+      
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'trip', trip.id);
+      res.json(trip);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.post('/api/trips/:id/respond', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      const tripId = parseInt(id);
+      
+      if (user.role !== 'guardian') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const trip = await storage.getTrip(tripId);
+      
+      if (!trip) {
+        return res.status(404).json({ error: 'Trip not found' });
+      }
+      
+      if (!canAccessDaycare(user, trip.daycareId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const { childId, response: responseValue } = req.body;
+      const parsedChildId = parseInt(childId);
+      
+      const children = await storage.getChildrenByGuardian(user.id);
+      const childIds = children.map(c => c.id);
+      
+      if (!childIds.includes(parsedChildId)) {
+        return res.status(403).json({ error: 'Not authorized for this child' });
+      }
+      
+      const response = await storage.createTripResponse({
+        tripId,
+        guardianId: user.id,
+        childId: parsedChildId,
+        response: responseValue,
+      });
+      
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'trip_response', response.id);
+      
+      res.json(response);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.get('/api/trip-responses', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // GDPR: Super admin cannot access personal data
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'trip_responses');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role === 'guardian') {
+        const responses = await storage.getTripResponsesByGuardian(user.id);
+        return res.json(responses);
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      const responses = await storage.getTripResponses(user.daycareId);
+      res.json(responses);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch responses' });
+    }
+  });
+
+  app.get('/api/users', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // GDPR: Super admin cannot access user lists (personal data)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'users');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const users = await storage.getUsersByDaycare(user.daycareId);
+      
+      const usersWithChildren = await Promise.all(
+        users.map(async (u) => {
+          let linkedChildren: Child[] = [];
+          if (u.role === 'guardian') {
+            const allLinkedChildren = await storage.getChildrenByGuardian(u.id);
+            linkedChildren = allLinkedChildren.filter(c => c.daycareId === user.daycareId);
+          }
+          return {
+            id: u.id,
+            name: u.name,
+            email: u.email,
+            role: u.role,
+            daycareId: u.daycareId,
+            linkedChildren: linkedChildren.map(c => ({ id: c.id, name: c.name })),
+          };
+        })
+      );
+      
+      res.json(usersWithChildren);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch users' });
+    }
+  });
+
+  app.post('/api/users', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const validatedData = createUserSchema.parse({
+        ...req.body,
+        daycareId: user.daycareId,
+      });
+      
+      const existingUser = await storage.getUserByEmail(validatedData.email);
+      if (existingUser) {
+        return res.status(400).json({ error: 'Email already in use' });
+      }
+      
+      const passwordHash = await hashPassword(validatedData.password);
+      
+      const newUser = await storage.createUser({
+        name: validatedData.name,
+        email: validatedData.email,
+        passwordHash,
+        role: validatedData.role,
+        daycareId: validatedData.daycareId,
+      });
+      
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'user', newUser.id, { role: validatedData.role });
+      
+      res.json({
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        role: newUser.role,
+        daycareId: newUser.daycareId,
+      });
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.post('/api/users/:userId/children/:childId', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { userId, childId } = req.params;
+      
+      // GDPR: Super admin cannot link guardians to children (personal data operation)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'guardian_child_link');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const targetUser = await storage.getUser(parseInt(userId));
+      const child = await storage.getChild(parseInt(childId));
+      
+      if (!targetUser || !child) {
+        return res.status(404).json({ error: 'User or child not found' });
+      }
+      
+      // Verify both user and child are in same daycare as requester
+      if (!canAccessDaycare(user, targetUser.daycareId!) || !canAccessDaycare(user, child.daycareId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      // Verify they are in the same daycare as each other
+      if (targetUser.daycareId !== child.daycareId) {
+        return res.status(403).json({ error: 'User and child must be from same daycare' });
+      }
+      
+      if (targetUser.role !== 'guardian') {
+        return res.status(400).json({ error: 'Can only link guardians to children' });
+      }
+      
+      await storage.createGuardianRelation(parseInt(userId), parseInt(childId));
+      
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'guardian_child_link');
+      
+      res.json({ success: true });
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.delete('/api/users/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      const userId = parseInt(id);
+
+      // GDPR: Super admin cannot delete users (personal data operation)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'users');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+
+      const targetUser = await storage.getUser(userId);
+      if (!targetUser) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      if (!canAccessDaycare(user, targetUser.daycareId!)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      await storage.deleteUser(userId);
+      await logAudit(user.id, user.role, user.daycareId, 'DELETE', 'user', userId);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to delete user' });
+    }
+  });
+
+  app.delete('/api/children/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      const childId = parseInt(id);
+
+      // GDPR: Super admin cannot delete children (personal data operation)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'children');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+
+      // RBAC: Only admins can delete children
+      // Staff cannot delete children - this is an administrative operation
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Only administrators can remove children' });
+      }
+
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+
+      const child = await storage.getChild(childId);
+      if (!child) {
+        return res.status(404).json({ error: 'Child not found' });
+      }
+
+      if (!canAccessDaycare(user, child.daycareId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      await storage.deleteChild(childId);
+      await logAudit(user.id, user.role, user.daycareId, 'DELETE', 'child', childId);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to delete child' });
+    }
+  });
+
+  app.delete('/api/trips/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      const tripId = parseInt(id);
+
+      // GDPR: Super admin cannot delete trips (personal data operation)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'trips');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+
+      const trip = await storage.getTrip(tripId);
+      if (!trip) {
+        return res.status(404).json({ error: 'Trip not found' });
+      }
+
+      if (!canAccessDaycare(user, trip.daycareId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      await storage.deleteTrip(tripId);
+      await logAudit(user.id, user.role, user.daycareId, 'DELETE', 'trip', tripId);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to delete trip' });
+    }
+  });
+
+  app.delete('/api/documents/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      const docId = parseInt(id);
+
+      // GDPR: Super admin cannot delete documents (personal data operation)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'documents');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+
+      const docs = await storage.getDocuments(user.daycareId);
+      const document = docs.find(d => d.id === docId);
+      
+      if (!document) {
+        return res.status(404).json({ error: 'Document not found' });
+      }
+
+      await storage.deleteDocument(docId);
+      await logAudit(user.id, user.role, user.daycareId, 'DELETE', 'document', docId);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to delete document' });
+    }
+  });
+
+  // ==========================================
+  // Municipality Management (Super Admin only)
+  // ==========================================
+  
+  app.get('/api/municipalities', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const allMunicipalities = await storage.getAllMunicipalities();
+      res.json(allMunicipalities);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch municipalities' });
+    }
+  });
+  
+  app.get('/api/municipalities/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const municipality = await storage.getMunicipality(parseInt(id));
+      if (!municipality) {
+        return res.status(404).json({ error: 'Municipality not found' });
+      }
+      
+      res.json(municipality);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch municipality' });
+    }
+  });
+  
+  app.post('/api/municipalities', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const validatedData = insertMunicipalitySchema.parse(req.body);
+      
+      // Check for duplicate code or name
+      const existingByCode = await storage.getMunicipalityByCode(validatedData.code);
+      if (existingByCode) {
+        return res.status(400).json({ error: 'Municipality code already in use' });
+      }
+      
+      const municipality = await storage.createMunicipality(validatedData);
+      
+      await logAudit(user.id, user.role, null, 'CREATE', 'municipality', municipality.id);
+      
+      res.json(municipality);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+  
+  app.patch('/api/municipalities/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const municipality = await storage.getMunicipality(parseInt(id));
+      if (!municipality) {
+        return res.status(404).json({ error: 'Municipality not found' });
+      }
+      
+      // Pre-validation: reject empty request body
+      if (!req.body || Object.keys(req.body).length === 0) {
+        return res.status(400).json({ error: 'No update fields provided' });
+      }
+      
+      // Validate and normalize updates using dedicated update schema
+      // Schema handles: trimming, uppercasing codes, email lowercase, strict mode
+      // Schema converts empty strings to null for clearable fields (defaultMenuSourceUrl, contactEmail)
+      const validatedUpdates = updateMunicipalitySchema.parse(req.body);
+      
+      // Build updates object - keep null values for clearing, skip undefined
+      const cleanUpdates: Record<string, any> = {};
+      for (const [key, value] of Object.entries(validatedUpdates)) {
+        if (value !== undefined) {
+          cleanUpdates[key] = value;
+        }
+      }
+      
+      // Reject if no actual updates after filtering undefined
+      if (Object.keys(cleanUpdates).length === 0) {
+        return res.status(400).json({ error: 'No valid updates provided' });
+      }
+      
+      // Check for code uniqueness if code is being changed (already normalized/uppercased by schema)
+      if (cleanUpdates.code && cleanUpdates.code !== municipality.code) {
+        const existingByCode = await storage.getMunicipalityByCode(cleanUpdates.code as string);
+        if (existingByCode) {
+          return res.status(400).json({ error: 'Municipality code already in use' });
+        }
+      }
+      
+      const updatedMunicipality = await storage.updateMunicipality(parseInt(id), cleanUpdates);
+      
+      await logAudit(user.id, user.role, null, 'UPDATE', 'municipality', parseInt(id));
+      
+      res.json(updatedMunicipality);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+  
+  app.delete('/api/municipalities/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const municipality = await storage.getMunicipality(parseInt(id));
+      if (!municipality) {
+        return res.status(404).json({ error: 'Municipality not found' });
+      }
+      
+      await storage.deleteMunicipality(parseInt(id));
+      
+      await logAudit(user.id, user.role, null, 'DELETE', 'municipality', parseInt(id));
+      
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to delete municipality' });
+    }
+  });
+  
+  // Get daycares by municipality ID
+  app.get('/api/municipalities/:id/daycares', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const municipalityDaycares = await storage.getDaycaresByMunicipalityId(parseInt(id));
+      res.json(municipalityDaycares);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch daycares' });
+    }
+  });
+
+  // ==========================================
+  // Daycare Management (Super Admin only)
+  // ==========================================
+
+  app.delete('/api/daycares/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      const daycareId = parseInt(id);
+
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      const daycare = await storage.getDaycare(daycareId);
+      if (!daycare) {
+        return res.status(404).json({ error: 'Daycare not found' });
+      }
+
+      await storage.deleteDaycare(daycareId);
+      
+      await logAudit(user.id, user.role, null, 'DELETE', 'daycare', daycareId);
+      
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to delete daycare' });
+    }
+  });
+
+  app.get('/api/daycares', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const daycares = await storage.getAllDaycares();
+      res.json(daycares);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch daycares' });
+    }
+  });
+
+  app.post('/api/daycares', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const validatedData = insertDaycareSchema.parse(req.body);
+      
+      const existingDaycare = await storage.getDaycareByCode(validatedData.code);
+      if (existingDaycare) {
+        return res.status(400).json({ error: 'Daycare code already in use' });
+      }
+      
+      const daycare = await storage.createDaycare(validatedData);
+      
+      // Create default meal menus for the next 7 days
+      const today = new Date();
+      const mealTypes: ('breakfast' | 'lunch' | 'snack')[] = ['breakfast', 'lunch', 'snack'];
+      
+      for (let i = 0; i < 7; i++) {
+        const menuDate = new Date(today);
+        menuDate.setDate(today.getDate() + i);
+        const dateStr = menuDate.toISOString().split('T')[0];
+        
+        for (const mealType of mealTypes) {
+          try {
+            await storage.createMealMenu({
+              daycareId: daycare.id,
+              date: dateStr,
+              mealType: mealType,
+              foodName: '',
+            });
+          } catch (e) {
+            // Ignore duplicate errors
+          }
+        }
+      }
+      
+      await logAudit(user.id, user.role, null, 'CREATE', 'daycare', daycare.id);
+      
+      // Invalidate public cache
+      invalidateCache('public:');
+      
+      res.json(daycare);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  // GDPR: Super admin can ONLY see admin users per daycare, not all users
+  app.get('/api/super-admin/admins', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const daycares = await storage.getAllDaycares();
+      const adminsByDaycare = await Promise.all(
+        daycares.map(async (daycare) => {
+          const admins = await storage.getDaycareLeadersByDaycare(daycare.id);
+          return {
+            daycareId: daycare.id,
+            daycareName: daycare.name,
+            admins: admins.map((a: typeof admins[number]) => ({
+              id: a.id,
+              name: a.name,
+              email: a.email,
+            })),
+          };
+        })
+      );
+      
+      await logAudit(user.id, user.role, null, 'VIEW', 'admins_list');
+      res.json(adminsByDaycare);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch admins' });
+    }
+  });
+
+  // GDPR: Super admin can ONLY create admin users for daycares
+  app.post('/api/super-admin/admins', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const { name, email, password, daycareId } = req.body;
+      
+      if (!name || !email || !password || !daycareId) {
+        return res.status(400).json({ error: 'All fields required' });
+      }
+      
+      // Verify daycare exists
+      const daycare = await storage.getDaycare(daycareId);
+      if (!daycare) {
+        return res.status(404).json({ error: 'Daycare not found' });
+      }
+      
+      const existingUser = await storage.getUserByEmail(email);
+      if (existingUser) {
+        return res.status(400).json({ error: 'Email already in use' });
+      }
+      
+      const passwordHash = await hashPassword(password);
+      
+      // Super admin can ONLY create daycare leader users
+      const newUser = await storage.createUser({
+        name,
+        email,
+        passwordHash,
+        role: 'daycareleader',
+        daycareId,
+        passwordNeedsReset: false,
+      });
+      
+      await logAudit(user.id, user.role, daycareId, 'CREATE', 'daycareleader', newUser.id);
+      res.json({
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        role: newUser.role,
+        daycareId: newUser.daycareId,
+      });
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  // Delete daycare leader (admin) - Super admin only
+  app.delete('/api/super-admin/admins/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const { id } = req.params;
+      const adminId = parseInt(id);
+      
+      const targetUser = await storage.getUser(adminId);
+      if (!targetUser) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Verify target user is a daycare leader
+      if (targetUser.role !== 'daycareleader') {
+        return res.status(400).json({ error: 'Can only delete daycare leaders' });
+      }
+      
+      // Delete the user (this cascades to all related data)
+      await storage.deleteUser(adminId);
+      await logAudit(user.id, user.role, targetUser.daycareId, 'DELETE', 'daycareleader', adminId);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to delete admin' });
+    }
+  });
+  
+  // Super admin stats endpoint (anonymized aggregated data only)
+  app.get('/api/super-admin/stats', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const stats = await storage.getAnonymizedStats();
+      await logAudit(user.id, user.role, null, 'VIEW', 'stats');
+      res.json(stats);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch stats' });
+    }
+  });
+  
+  // Daycare admin KPI stats endpoint (daycare leaders only)
+  app.get('/api/daycare/stats', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (!user.daycareId || user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const stats = await storage.getDaycareStats(user.daycareId);
+      await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'daycare_stats');
+      res.json(stats);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch daycare stats' });
+    }
+  });
+  
+  // CSV Export endpoints (daycare leaders only)
+  app.get('/api/export/children', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (!user.daycareId || user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const children = await storage.getChildren(user.daycareId);
+      
+      // Build CSV with BOM for Excel UTF-8 support
+      const BOM = '\uFEFF';
+      const headers = ['ID', 'Nimi', 'Syntymäaika', 'Ryhmä'];
+      const rows = await Promise.all(children.map(async (child) => {
+        const group = child.groupId ? await storage.getGroupById(child.groupId) : null;
+        return [
+          child.id,
+          child.name,
+          child.birthdate ? new Date(child.birthdate).toLocaleDateString('fi-FI') : '',
+          group?.name || ''
+        ].map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',');
+      }));
+      
+      const csv = BOM + headers.join(',') + '\n' + rows.join('\n');
+      
+      await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_children');
+      
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="lapset-${new Date().toISOString().split('T')[0]}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error('Error exporting children:', error);
+      res.status(500).json({ error: 'Failed to export children' });
+    }
+  });
+  
+  app.get('/api/export/entries', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (!user.daycareId || user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const { startDate, endDate } = req.query;
+      const start = startDate ? new Date(startDate as string) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const end = endDate ? new Date(endDate as string) : new Date();
+      
+      const entries = await storage.getEntriesByDateRange(user.daycareId, start, end);
+      const children = await storage.getChildren(user.daycareId);
+      const childMap = new Map(children.map(c => [c.id, c]));
+      
+      // Bulk fetch all staff to avoid N+1 queries
+      const staffIds = Array.from(new Set(entries.map(e => e.staffId).filter(Boolean))) as number[];
+      const staff = await storage.getUsersByIds(staffIds);
+      const staffMap = new Map(staff.map(s => [s.id, s]));
+      
+      const BOM = '\uFEFF';
+      const headers = ['Päivämäärä', 'Aika', 'Lapsi', 'Tyyppi', 'Sisältö', 'Merkinnyt'];
+      const rows = entries.map((entry) => {
+        const child = childMap.get(entry.childId);
+        const entryStaff = staffMap.get(entry.staffId);
+        const timestamp = new Date(entry.timestamp);
+        return [
+          timestamp.toLocaleDateString('fi-FI'),
+          timestamp.toLocaleTimeString('fi-FI'),
+          child?.name || '',
+          entry.type,
+          entry.value || '',
+          entryStaff?.name || ''
+        ].map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',');
+      });
+      
+      const csv = BOM + headers.join(',') + '\n' + rows.join('\n');
+      
+      await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_entries');
+      
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="merkinnät-${start.toISOString().split('T')[0]}-${end.toISOString().split('T')[0]}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error('Error exporting entries:', error);
+      res.status(500).json({ error: 'Failed to export entries' });
+    }
+  });
+  
+  app.get('/api/export/absences', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (!user.daycareId || user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const { startDate, endDate } = req.query;
+      const start = startDate ? new Date(startDate as string) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const end = endDate ? new Date(endDate as string) : new Date();
+      
+      const absences = await storage.getAbsencesByDateRange(user.daycareId, start, end);
+      const children = await storage.getChildren(user.daycareId);
+      const childMap = new Map(children.map(c => [c.id, c]));
+      
+      // Bulk fetch all reporters to avoid N+1 queries
+      const reporterIds = Array.from(new Set(absences.map(a => a.reportedById).filter(Boolean))) as number[];
+      const reporters = await storage.getUsersByIds(reporterIds);
+      const reporterMap = new Map(reporters.map(r => [r.id, r]));
+      
+      const BOM = '\uFEFF';
+      const headers = ['Päivämäärä', 'Lapsi', 'Tyyppi', 'Syy', 'Ilmoittaja'];
+      const rows = absences.map((absence) => {
+        const child = childMap.get(absence.childId);
+        const reporter = reporterMap.get(absence.reportedById);
+        return [
+          new Date(absence.date).toLocaleDateString('fi-FI'),
+          child?.name || '',
+          absence.type || '',
+          absence.reason || '',
+          reporter?.name || ''
+        ].map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',');
+      });
+      
+      const csv = BOM + headers.join(',') + '\n' + rows.join('\n');
+      
+      await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_absences');
+      
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="poissaolot-${start.toISOString().split('T')[0]}-${end.toISOString().split('T')[0]}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error('Error exporting absences:', error);
+      res.status(500).json({ error: 'Failed to export absences' });
+    }
+  });
+  
+  app.get('/api/export/attendance', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (!user.daycareId || user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const { startDate, endDate } = req.query;
+      const start = startDate ? new Date(startDate as string) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const end = endDate ? new Date(endDate as string) : new Date();
+      
+      const children = await storage.getChildren(user.daycareId);
+      const entries = await storage.getEntriesByDateRange(user.daycareId, start, end);
+      const absences = await storage.getAbsencesByDateRange(user.daycareId, start, end);
+      
+      // Build attendance summary per child
+      const attendanceSummary = children.map(child => {
+        const childEntries = entries.filter(e => e.childId === child.id);
+        const childAbsences = absences.filter(a => a.childId === child.id);
+        const arrivalDays = new Set(childEntries.filter(e => e.type === 'arrival').map(e => new Date(e.timestamp).toLocaleDateString('fi-FI'))).size;
+        // Each absence is a single day (uses date field, not startDate/endDate)
+        const absenceDays = new Set(childAbsences.map(a => new Date(a.date).toLocaleDateString('fi-FI'))).size;
+        
+        return {
+          name: child.name,
+          arrivalDays,
+          absenceDays,
+          totalEntries: childEntries.length
+        };
+      });
+      
+      const BOM = '\uFEFF';
+      const headers = ['Lapsi', 'Läsnäolopäiviä', 'Poissaolopäiviä', 'Merkintöjä yhteensä'];
+      const rows = attendanceSummary.map(summary => [
+        summary.name,
+        summary.arrivalDays,
+        summary.absenceDays,
+        summary.totalEntries
+      ].map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','));
+      
+      const csv = BOM + headers.join(',') + '\n' + rows.join('\n');
+      
+      await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_attendance');
+      
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="läsnäolo-${start.toISOString().split('T')[0]}-${end.toISOString().split('T')[0]}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error('Error exporting attendance:', error);
+      res.status(500).json({ error: 'Failed to export attendance' });
+    }
+  });
+  
+  // Super admin audit logs endpoint (GDPR: metadata sanitized to prevent PII exposure)
+  app.get('/api/super-admin/audit-logs', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const { daycareId, limit, offset } = req.query;
+      const logs = await storage.getAuditLogs(
+        daycareId ? parseInt(daycareId as string) : undefined,
+        limit ? parseInt(limit as string) : 100,
+        offset ? parseInt(offset as string) : 0
+      );
+      
+      // GDPR: Sanitize logs - remove metadata that might contain PII (IP addresses, etc.)
+      // Only return safe fields: id, action, entityType, entityIdHash, actorRole, daycareId, timestamp
+      // Field is explicitly named 'entityIdHash' to prevent accidental reintroduction of raw IDs
+      const sanitizedLogs = logs.map(log => ({
+        id: log.id,
+        action: log.action,
+        entityType: log.entityType,
+        entityIdHash: log.entityIdHash, // Explicitly named to indicate hashing
+        userRole: log.actorRole, // Renamed for API response clarity
+        daycareId: log.daycareId,
+        createdAt: log.timestamp, // Renamed for API response clarity
+        // metadata: explicitly excluded - may contain IP addresses or other PII
+      }));
+      
+      res.json(sanitizedLogs);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch audit logs' });
+    }
+  });
+
+  app.get('/api/absences', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // GDPR: Super admin cannot access absences (personal data)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'absences');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      let absences;
+      if (user.role === 'guardian') {
+        // Guardians see only absences for their children
+        const children = await storage.getChildrenByGuardian(user.id);
+        const allAbsences = await Promise.all(
+          children.map(child => storage.getAbsencesByChild(child.id))
+        );
+        absences = allAbsences.flat();
+      } else if (user.role === 'staff') {
+        // RBAC: Staff sees ONLY absences for children in their assigned groups
+        const children = await storage.getChildrenByTeacherGroups(user.id);
+        const allAbsences = await Promise.all(
+          children.map(child => storage.getAbsencesByChild(child.id))
+        );
+        absences = allAbsences.flat();
+      } else if (user.role === 'daycareleader') {
+        // Admins see all absences in their daycare
+        absences = await storage.getAbsences(user.daycareId);
+      } else {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const enrichedAbsences = await Promise.all(
+        absences.map(async (absence) => {
+          const child = await storage.getChild(absence.childId);
+          const reporter = await storage.getUser(absence.reportedById);
+          
+          return {
+            ...absence,
+            childName: child?.name || 'Unknown',
+            reportedByName: reporter?.name || 'Unknown',
+          };
+        })
+      );
+      
+      res.json(enrichedAbsences);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch absences' });
+    }
+  });
+
+  app.post('/api/absences', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // GDPR: Super admin cannot create absences (personal data)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'absences');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      // Only guardians can report absences
+      if (user.role !== 'guardian') {
+        return res.status(403).json({ error: 'Only parents can report absences' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const validatedData = insertAbsenceSchema.parse({
+        ...req.body,
+        reportedById: user.id,
+        daycareId: user.daycareId,
+      });
+      
+      const child = await storage.getChild(validatedData.childId);
+      if (!child || child.daycareId !== validatedData.daycareId) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      // Verify guardian is linked to this child
+      const guardianChildren = await storage.getChildrenByGuardian(user.id);
+      const isGuardianOfChild = guardianChildren.some(c => c.id === validatedData.childId);
+      if (!isGuardianOfChild) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const absence = await storage.createAbsence(validatedData);
+      
+      // Create notifications for staff/admin when absence is reported
+      const staff = await storage.getStaffByDaycare(validatedData.daycareId);
+      
+      for (const staffMember of staff) {
+        await storage.createNotification({
+          userId: staffMember.id,
+          daycareId: validatedData.daycareId,
+          type: 'absence',
+          title: `absence_${validatedData.type}`,
+          message: JSON.stringify({ childName: child.name, absenceType: validatedData.type, date: validatedData.date }),
+          relatedId: absence.id,
+        });
+      }
+      
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'absence', absence.id);
+      res.json(absence);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.get('/api/messages', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // GDPR: Super admin cannot access messages (personal data)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'messages');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      const messages = await storage.getMessages(user.id, user.daycareId);
+      
+      const enrichedMessages = await Promise.all(
+        messages.map(async (msg) => {
+          const sender = await storage.getUser(msg.senderId);
+          const recipient = await storage.getUser(msg.recipientId);
+          const child = msg.childId ? await storage.getChild(msg.childId) : null;
+          
+          return {
+            ...msg,
+            senderName: sender?.name || 'Unknown',
+            recipientName: recipient?.name || 'Unknown',
+            childName: child?.name || null,
+          };
+        })
+      );
+      
+      res.json(enrichedMessages);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch messages' });
+    }
+  });
+
+  app.get('/api/conversations/:otherUserId', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { otherUserId } = req.params;
+      
+      // GDPR: Super admin cannot access conversations (personal data)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'messages');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const otherUser = await storage.getUser(parseInt(otherUserId));
+      if (!otherUser || !canAccessDaycare(user, otherUser.daycareId!)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const messages = await storage.getConversation(user.id, parseInt(otherUserId));
+      
+      const enrichedMessages = await Promise.all(
+        messages.map(async (msg) => {
+          const sender = await storage.getUser(msg.senderId);
+          const recipient = await storage.getUser(msg.recipientId);
+          const child = msg.childId ? await storage.getChild(msg.childId) : null;
+          
+          return {
+            ...msg,
+            senderName: sender?.name || 'Unknown',
+            recipientName: recipient?.name || 'Unknown',
+            childName: child?.name || null,
+          };
+        })
+      );
+      
+      res.json(enrichedMessages);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch conversation' });
+    }
+  });
+
+  app.post('/api/messages', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // GDPR: Super admin cannot send messages (personal data)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'messages');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const validatedData = insertMessageSchema.parse({
+        ...req.body,
+        senderId: user.id,
+        daycareId: user.daycareId,
+      });
+      
+      const recipient = await storage.getUser(validatedData.recipientId);
+      if (!recipient || !canAccessDaycare(user, recipient.daycareId!)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      // Guardians can only message staff/admin about their children
+      if (user.role === 'guardian') {
+        if (!validatedData.childId) {
+          return res.status(400).json({ error: 'Child context required for guardian messages' });
+        }
+        
+        if (recipient.role !== 'daycareleader' && recipient.role !== 'staff') {
+          return res.status(403).json({ error: 'Guardians can only message staff or admins' });
+        }
+        
+        const guardianChildren = await storage.getChildrenByGuardian(user.id);
+        const isGuardianOfChild = guardianChildren.some(c => c.id === validatedData.childId);
+        if (!isGuardianOfChild) {
+          return res.status(403).json({ error: 'Unauthorized' });
+        }
+      }
+      
+      const message = await storage.createMessage(validatedData);
+      
+      // Create notification for recipient
+      await storage.createNotification({
+        userId: validatedData.recipientId,
+        daycareId: validatedData.daycareId,
+        type: 'message',
+        title: 'new_message',
+        message: JSON.stringify({ senderName: user.name }),
+        relatedId: message.id,
+      });
+      
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'message', message.id);
+      res.json(message);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.patch('/api/messages/:id/read', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const { id } = req.params;
+      const messageId = parseInt(id);
+      
+      // Fetch the message to verify the caller is the recipient
+      const messages = await storage.getMessages(user.id, user.daycareId);
+      const message = messages.find(m => m.id === messageId);
+      
+      if (!message) {
+        return res.status(404).json({ error: 'Message not found' });
+      }
+      
+      if (message.recipientId !== user.id) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      await storage.markMessageAsRead(messageId);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.get('/api/documents', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { type } = req.query;
+      
+      // GDPR: Super admin cannot access documents (may contain personal data)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'documents');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const documents = type 
+        ? await storage.getDocumentsByType(user.daycareId, type as string)
+        : await storage.getDocuments(user.daycareId);
+      
+      res.json(documents);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch documents' });
+    }
+  });
+
+  app.post('/api/documents', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const validatedData = insertDocumentSchema.parse({
+        ...req.body,
+        publishedById: user.id,
+        daycareId: user.daycareId,
+      });
+      
+      const document = await storage.createDocument(validatedData);
+      
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'document', document.id);
+      res.json(document);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  // Notification endpoints
+  app.get('/api/notifications', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const notifications = await storage.getNotifications(user.id);
+      res.json(notifications);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch notifications' });
+    }
+  });
+
+  app.get('/api/notifications/unread-count', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const count = await storage.getUnreadNotificationCount(user.id);
+      res.json({ count });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch unread count' });
+    }
+  });
+
+  app.patch('/api/notifications/:id/read', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      const notificationId = parseInt(id);
+      
+      // Verify the notification belongs to the user
+      const notifications = await storage.getNotifications(user.id);
+      const notification = notifications.find(n => n.id === notificationId);
+      
+      if (!notification) {
+        return res.status(404).json({ error: 'Notification not found' });
+      }
+      
+      await storage.markNotificationAsRead(notificationId);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(400).json({ error: 'Failed to mark notification as read' });
+    }
+  });
+
+  app.patch('/api/notifications/read-all', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      await storage.markAllNotificationsAsRead(user.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(400).json({ error: 'Failed to mark all notifications as read' });
+    }
+  });
+
+  // ===== FORMS SYSTEM =====
+  
+  // Admin: Get all forms for daycare
+  app.get('/api/forms', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'forms');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      // Guardians only see active forms, admin/staff see all
+      const forms = user.role === 'guardian' 
+        ? await storage.getActiveForms(user.daycareId)
+        : await storage.getForms(user.daycareId);
+      
+      res.json(forms);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch forms' });
+    }
+  });
+  
+  // Get single form
+  app.get('/api/forms/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'forms');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      const form = await storage.getForm(parseInt(id));
+      if (!form) {
+        return res.status(404).json({ error: 'Form not found' });
+      }
+      
+      if (!canAccessDaycare(user, form.daycareId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      res.json(form);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch form' });
+    }
+  });
+  
+  // Admin: Create new form
+  app.post('/api/forms', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'forms');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Only administrators can create forms' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const validatedData = insertFormSchema.parse({
+        ...req.body,
+        daycareId: user.daycareId,
+        createdById: user.id,
+      });
+      
+      const form = await storage.createForm(validatedData);
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'form', form.id);
+      res.json(form);
+    } catch (error) {
+      console.error('Form creation error:', error);
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+  
+  // Admin: Update form
+  app.patch('/api/forms/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'forms');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Only administrators can update forms' });
+      }
+      
+      const form = await storage.getForm(parseInt(id));
+      if (!form) {
+        return res.status(404).json({ error: 'Form not found' });
+      }
+      
+      if (!canAccessDaycare(user, form.daycareId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const updated = await storage.updateForm(parseInt(id), req.body);
+      await logAudit(user.id, user.role, user.daycareId, 'UPDATE', 'form', form.id);
+      res.json(updated);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+  
+  // Admin: Delete form
+  app.delete('/api/forms/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'forms');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Only administrators can delete forms' });
+      }
+      
+      const form = await storage.getForm(parseInt(id));
+      if (!form) {
+        return res.status(404).json({ error: 'Form not found' });
+      }
+      
+      if (!canAccessDaycare(user, form.daycareId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      await storage.deleteForm(parseInt(id));
+      await logAudit(user.id, user.role, user.daycareId, 'DELETE', 'form', form.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to delete form' });
+    }
+  });
+  
+  // Get form submissions (admin/staff)
+  app.get('/api/forms/:id/submissions', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'form_submissions');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const form = await storage.getForm(parseInt(id));
+      if (!form) {
+        return res.status(404).json({ error: 'Form not found' });
+      }
+      
+      if (!canAccessDaycare(user, form.daycareId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const submissions = await storage.getFormSubmissions(parseInt(id));
+      
+      // Enrich with user and child names
+      const enrichedSubmissions = await Promise.all(
+        submissions.map(async (sub) => {
+          const submitter = await storage.getUser(sub.submittedById);
+          const child = sub.childId ? await storage.getChild(sub.childId) : null;
+          return {
+            ...sub,
+            submitterName: submitter?.name || 'Unknown',
+            childName: child?.name || null,
+          };
+        })
+      );
+      
+      res.json(enrichedSubmissions);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch submissions' });
+    }
+  });
+  
+  // Guardian: Submit form
+  app.post('/api/forms/:id/submit', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { id } = req.params;
+      
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'form_submissions');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'guardian') {
+        return res.status(403).json({ error: 'Only guardians can submit forms' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const form = await storage.getForm(parseInt(id));
+      if (!form) {
+        return res.status(404).json({ error: 'Form not found' });
+      }
+      
+      if (!canAccessDaycare(user, form.daycareId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const { childId, responses } = req.body;
+      
+      // Verify child access if form requires child context
+      if (form.requiresChildContext) {
+        if (!childId) {
+          return res.status(400).json({ error: 'Child selection required for this form' });
+        }
+        
+        const guardianChildren = await storage.getChildrenByGuardian(user.id);
+        const hasAccess = guardianChildren.some(c => c.id === childId);
+        if (!hasAccess) {
+          return res.status(403).json({ error: 'Unauthorized - not guardian of this child' });
+        }
+        
+        // Check if already submitted for this child
+        const exists = await storage.checkFormSubmissionExists(parseInt(id), childId);
+        if (exists) {
+          return res.status(400).json({ error: 'Form already submitted for this child' });
+        }
+      } else {
+        // Check if already submitted by this user
+        const exists = await storage.checkFormSubmissionExists(parseInt(id), undefined, user.id);
+        if (exists) {
+          return res.status(400).json({ error: 'Form already submitted' });
+        }
+      }
+      
+      const validatedData = insertFormSubmissionSchema.parse({
+        formId: parseInt(id),
+        daycareId: user.daycareId,
+        submittedById: user.id,
+        childId: childId || null,
+        responses,
+      });
+      
+      const submission = await storage.createFormSubmission(validatedData);
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'form_submission', submission.id);
+      res.json(submission);
+    } catch (error) {
+      console.error('Form submission error:', error);
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+  
+  // Guardian: Get my form submissions
+  app.get('/api/my-submissions', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'form_submissions');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      const submissions = await storage.getFormSubmissionsByUser(user.id);
+      
+      // Enrich with form titles and child names
+      const enrichedSubmissions = await Promise.all(
+        submissions.map(async (sub) => {
+          const form = await storage.getForm(sub.formId);
+          const child = sub.childId ? await storage.getChild(sub.childId) : null;
+          return {
+            ...sub,
+            formTitle: form?.title || 'Unknown Form',
+            childName: child?.name || null,
+          };
+        })
+      );
+      
+      res.json(enrichedSubmissions);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch submissions' });
+    }
+  });
+  
+  // ===== CHILD CONSENTS =====
+  
+  // Get child's consents (for parent/staff/admin)
+  app.get('/api/children/:childId/consents', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { childId } = req.params;
+      
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'child_consents');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      const child = await storage.getChild(parseInt(childId));
+      if (!child) {
+        return res.status(404).json({ error: 'Child not found' });
+      }
+      
+      // Verify access
+      if (user.role === 'guardian') {
+        const guardianChildren = await storage.getChildrenByGuardian(user.id);
+        const hasAccess = guardianChildren.some(c => c.id === parseInt(childId));
+        if (!hasAccess) {
+          return res.status(403).json({ error: 'Unauthorized' });
+        }
+      } else if (user.role === 'staff' || user.role === 'daycareleader') {
+        if (!canAccessDaycare(user, child.daycareId)) {
+          return res.status(403).json({ error: 'Unauthorized' });
+        }
+      } else {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const consents = await storage.getChildConsents(parseInt(childId));
+      res.json(consents);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch consents' });
+    }
+  });
+  
+  // Guardian: Update child consent
+  app.post('/api/children/:childId/consents', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { childId } = req.params;
+      
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'child_consents');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'guardian') {
+        return res.status(403).json({ error: 'Only guardians can update consent settings' });
+      }
+      
+      const child = await storage.getChild(parseInt(childId));
+      if (!child) {
+        return res.status(404).json({ error: 'Child not found' });
+      }
+      
+      // Verify guardian has access to this child
+      const guardianChildren = await storage.getChildrenByGuardian(user.id);
+      const hasAccess = guardianChildren.some(c => c.id === parseInt(childId));
+      if (!hasAccess) {
+        return res.status(403).json({ error: 'Unauthorized - not guardian of this child' });
+      }
+      
+      const validatedData = insertChildConsentSchema.parse({
+        childId: parseInt(childId),
+        daycareId: child.daycareId,
+        consentType: req.body.consentType,
+        granted: req.body.granted,
+        grantedById: user.id,
+        notes: req.body.notes,
+      });
+      
+      const consent = await storage.createOrUpdateChildConsent(validatedData);
+      await logAudit(user.id, user.role, user.daycareId, 'UPDATE', 'child_consent', consent.id);
+      res.json(consent);
+    } catch (error) {
+      console.error('Consent update error:', error);
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+  
+  // Admin/Staff: Get all consents for daycare (overview)
+  app.get('/api/consents', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'child_consents');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const consents = await storage.getChildConsentsByDaycare(user.daycareId);
+      
+      // Enrich with child names
+      const enrichedConsents = await Promise.all(
+        consents.map(async (consent) => {
+          const child = await storage.getChild(consent.childId);
+          const grantedBy = await storage.getUser(consent.grantedById);
+          return {
+            ...consent,
+            childName: child?.name || 'Unknown',
+            grantedByName: grantedBy?.name || 'Unknown',
+          };
+        })
+      );
+      
+      res.json(enrichedConsents);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch consents' });
+    }
+  });
+
+  // Meal Menu endpoints (available to guardian, staff, admin - NOT super_admin)
+  // GET /api/menu - Get today's menu
+  app.get('/api/menu', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // Super admin cannot access meal menus (GDPR - no daycare-specific data)
+      if (user.role === 'super_admin') {
+        return res.status(403).json({ error: 'Super admin cannot access meal menus' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      // Get daycare menu settings
+      const daycare = await storage.getDaycare(user.daycareId);
+      if (!daycare) return res.status(404).json({ error: 'Daycare not found' });
+      
+      // Determine effective menu source (daycare override or municipality default)
+      let effectiveSourceType = daycare.menuSourceType;
+      
+      // If daycare has no menu source, check municipality default
+      if ((!effectiveSourceType || effectiveSourceType === 'none') && daycare.municipalityId) {
+        const municipality = await storage.getMunicipality(daycare.municipalityId);
+        if (municipality && municipality.defaultMenuSourceType && municipality.defaultMenuSourceType !== 'none') {
+          effectiveSourceType = municipality.defaultMenuSourceType;
+        }
+      }
+      
+      // Get today's date in YYYY-MM-DD format
+      const today = new Date().toISOString().split('T')[0];
+      
+      // Fetch menu based on effective menu source type
+      let items: MealMenu[] = [];
+      if (effectiveSourceType === 'manual' || effectiveSourceType === 'aromi') {
+        items = await storage.getMealMenuByDate(today, user.daycareId);
+      }
+      
+      res.json({ date: today, items, menuSourceType: effectiveSourceType || 'none', dietLegend: dietInfoLegend });
+    } catch (error) {
+      console.error('Error fetching menu:', error);
+      res.status(500).json({ error: 'Failed to fetch menu' });
+    }
+  });
+
+  // GET /api/menu/week - Get current week's menu (MUST be before /api/menu/:date)
+  app.get('/api/menu/week', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role === 'super_admin') {
+        return res.status(403).json({ error: 'Super admin cannot access meal menus' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      // Get current week's Monday and Friday (daycare is Mon-Fri only)
+      const today = new Date();
+      const dayOfWeek = today.getDay();
+      const monday = new Date(today);
+      monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+      const friday = new Date(monday);
+      friday.setDate(monday.getDate() + 4);
+      
+      const startDate = monday.toISOString().split('T')[0];
+      const endDate = friday.toISOString().split('T')[0];
+      
+      const items = await storage.getMealMenuByDateRange(startDate, endDate, user.daycareId);
+      
+      // Group by date for frontend convenience (only weekdays)
+      const menuByDate: Record<string, typeof items> = {};
+      for (const item of items) {
+        const itemDate = new Date(item.date);
+        const itemDayOfWeek = itemDate.getDay();
+        // Skip weekends (Saturday = 6, Sunday = 0)
+        if (itemDayOfWeek === 0 || itemDayOfWeek === 6) continue;
+        
+        if (!menuByDate[item.date]) {
+          menuByDate[item.date] = [];
+        }
+        menuByDate[item.date].push(item);
+      }
+      
+      res.json({ 
+        startDate, 
+        endDate, 
+        menuByDate, 
+        dietLegend: dietInfoLegend 
+      });
+    } catch (error) {
+      console.error('Error fetching week menu:', error);
+      res.status(500).json({ error: 'Failed to fetch week menu' });
+    }
+  });
+
+  // GET /api/menu/:date - Get menu for specific date
+  app.get('/api/menu/:date', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // Super admin cannot access meal menus
+      if (user.role === 'super_admin') {
+        return res.status(403).json({ error: 'Super admin cannot access meal menus' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const { date } = req.params;
+      const items = await storage.getMealMenuByDate(date, user.daycareId);
+      res.json({ date, items, dietLegend: dietInfoLegend });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch menu' });
+    }
+  });
+
+  // Staff/Admin: Manual menu refresh (triggers Aromi scraper for this daycare)
+  app.post('/api/menu/refresh', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // Only staff and admin roles can refresh menu (super_admin blocked from menu access)
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'menu', undefined, { reason: 'GDPR' });
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader' && user.role !== 'staff' && user.role !== 'admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      // Get daycare to check menu source
+      const daycare = await storage.getDaycare(user.daycareId);
+      if (!daycare) return res.status(404).json({ error: 'Daycare not found' });
+      
+      // Determine effective menu source (daycare override or municipality default)
+      let effectiveSourceType = daycare.menuSourceType;
+      let effectiveSourceUrl = daycare.menuSourceUrl;
+      
+      // If daycare has no menu source, check municipality default
+      if ((!effectiveSourceType || effectiveSourceType === 'none') && daycare.municipalityId) {
+        const municipality = await storage.getMunicipality(daycare.municipalityId);
+        if (municipality && municipality.defaultMenuSourceType === 'aromi' && municipality.defaultMenuSourceUrl) {
+          effectiveSourceType = municipality.defaultMenuSourceType;
+          effectiveSourceUrl = municipality.defaultMenuSourceUrl;
+        }
+      }
+      
+      if (effectiveSourceType !== 'aromi') {
+        return res.status(400).json({ error: 'This daycare does not use Aromi menu source' });
+      }
+      
+      // Fetch menu for this specific daycare from Aromi
+      const result = await fetchAndSaveMenuForDaycare(user.daycareId, effectiveSourceUrl || undefined);
+      res.json(result);
+    } catch (error) {
+      console.error('Error refreshing menu:', error);
+      res.status(500).json({ error: 'Failed to refresh menu' });
+    }
+  });
+  
+  // Admin: Add manual menu item
+  app.post('/api/menu', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role === 'super_admin') {
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Only administrators can add menu items' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const { date, mealType, foodName, foodDescription, dietInfo } = req.body;
+      
+      if (!date || !mealType || !foodName) {
+        return res.status(400).json({ error: 'Missing required fields: date, mealType, foodName' });
+      }
+      
+      const menu = await storage.createMealMenu({
+        daycareId: user.daycareId,
+        date,
+        mealType,
+        foodName,
+        foodDescription,
+        dietInfo,
+      });
+      
+      res.json(menu);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to add menu item' });
+    }
+  });
+  
+  // Admin: Delete menu items for a date
+  app.delete('/api/menu/:date', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role === 'super_admin') {
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Only administrators can delete menu items' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const { date } = req.params;
+      await storage.deleteMealMenuByDate(date, user.daycareId);
+      
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to delete menu items' });
+    }
+  });
+  
+  // Admin: Get/update daycare menu settings
+  app.get('/api/daycare/menu-settings', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role === 'super_admin') {
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Only administrators can view menu settings' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const daycare = await storage.getDaycare(user.daycareId);
+      if (!daycare) return res.status(404).json({ error: 'Daycare not found' });
+      
+      res.json({
+        municipality: daycare.municipality,
+        menuSourceType: daycare.menuSourceType,
+        menuSourceUrl: daycare.menuSourceUrl,
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch menu settings' });
+    }
+  });
+  
+  app.patch('/api/daycare/menu-settings', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role === 'super_admin') {
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+      
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Only administrators can update menu settings' });
+      }
+      
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+      
+      const { municipality, menuSourceType, menuSourceUrl } = req.body;
+      
+      const daycare = await storage.updateDaycareMenuSettings(user.daycareId, {
+        municipality,
+        menuSourceType,
+        menuSourceUrl,
+      });
+      
+      res.json({
+        municipality: daycare.municipality,
+        menuSourceType: daycare.menuSourceType,
+        menuSourceUrl: daycare.menuSourceUrl,
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to update menu settings' });
+    }
+  });
+
+  // Push notification token registration
+  app.post('/api/push-token', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { token, platform } = req.body;
+      
+      if (!token || !platform) {
+        return res.status(400).json({ error: 'Missing token or platform' });
+      }
+      
+      await storage.savePushToken(user.id, token, platform);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error saving push token:', error);
+      res.status(500).json({ error: 'Failed to save push token' });
+    }
+  });
+  
+  // Remove push notification token (for logout)
+  app.delete('/api/push-token', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const { token } = req.body;
+      
+      if (!token) {
+        return res.status(400).json({ error: 'Missing token' });
+      }
+      
+      await storage.deletePushToken(user.id, token);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error removing push token:', error);
+      res.status(500).json({ error: 'Failed to remove push token' });
+    }
+  });
+
+  // ==================== GDPR SELF-SERVICE ENDPOINTS ====================
+  
+  // Guardian: Export all personal data (GDPR Article 20)
+  app.get('/api/gdpr/export', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // Only guardians can export their own data
+      if (user.role !== 'guardian') {
+        return res.status(403).json({ error: 'Only guardians can export their personal data' });
+      }
+      
+      const data = await storage.getGuardianDataExport(user.id);
+      
+      // Log the data export for GDPR compliance
+      await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'gdpr_export', user.id);
+      
+      // Return as downloadable JSON
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="gdpr-export-${user.id}-${new Date().toISOString().split('T')[0]}.json"`);
+      res.json(data);
+    } catch (error) {
+      console.error('Error exporting GDPR data:', error);
+      res.status(500).json({ error: 'Failed to export data' });
+    }
+  });
+  
+  // Guardian: Request data deletion (GDPR Article 17)
+  app.post('/api/gdpr/delete-request', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // Only guardians can request deletion
+      if (user.role !== 'guardian') {
+        return res.status(403).json({ error: 'Only guardians can request data deletion' });
+      }
+      
+      const { reason } = req.body;
+      
+      // Check if there's already a pending request
+      const existingRequests = await storage.getDeleteRequestsByUser(user.id);
+      const pendingRequest = existingRequests.find(r => r.status === 'pending');
+      if (pendingRequest) {
+        return res.status(400).json({ error: 'You already have a pending deletion request' });
+      }
+      
+      const request = await storage.createDeleteRequest({
+        userId: user.id,
+        daycareId: user.daycareId,
+        reason,
+      });
+      
+      await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'delete_request', request.id);
+      
+      res.json(request);
+    } catch (error) {
+      console.error('Error creating delete request:', error);
+      res.status(500).json({ error: 'Failed to create deletion request' });
+    }
+  });
+  
+  // Guardian: Get own deletion requests
+  app.get('/api/gdpr/my-delete-requests', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'guardian') {
+        return res.status(403).json({ error: 'Only guardians can view their deletion requests' });
+      }
+      
+      const requests = await storage.getDeleteRequestsByUser(user.id);
+      res.json(requests);
+    } catch (error) {
+      console.error('Error fetching delete requests:', error);
+      res.status(500).json({ error: 'Failed to fetch deletion requests' });
+    }
+  });
+  
+  // Admin: Get all deletion requests for their daycare
+  app.get('/api/gdpr/delete-requests', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Only staff can view deletion requests' });
+      }
+      
+      if (!user.daycareId) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const requests = await storage.getDeleteRequests(user.daycareId);
+      
+      // Enrich with user names (only for admin purposes)
+      const enrichedRequests = await Promise.all(requests.map(async (request) => {
+        const requestUser = await storage.getUser(request.userId);
+        return {
+          ...request,
+          userName: requestUser?.name || 'Unknown',
+          userEmail: requestUser?.email || 'Unknown',
+        };
+      }));
+      
+      res.json(enrichedRequests);
+    } catch (error) {
+      console.error('Error fetching delete requests:', error);
+      res.status(500).json({ error: 'Failed to fetch deletion requests' });
+    }
+  });
+  
+  // Admin: Approve or deny deletion request
+  app.patch('/api/gdpr/delete-requests/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Only administrators can process deletion requests' });
+      }
+      
+      if (!user.daycareId) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      const requestId = parseInt(req.params.id);
+      const { status, adminNote } = req.body;
+      
+      if (!status || !['approved', 'denied'].includes(status)) {
+        return res.status(400).json({ error: 'Invalid status. Must be "approved" or "denied"' });
+      }
+      
+      // Verify the request belongs to this daycare
+      const existingRequest = await storage.getDeleteRequest(requestId);
+      if (!existingRequest || existingRequest.daycareId !== user.daycareId) {
+        return res.status(404).json({ error: 'Request not found' });
+      }
+      
+      const updated = await storage.updateDeleteRequestStatus(requestId, status, user.id, adminNote);
+      
+      await logAudit(user.id, user.role, user.daycareId, 'UPDATE', 'delete_request', requestId, { status });
+      
+      res.json(updated);
+    } catch (error) {
+      console.error('Error updating delete request:', error);
+      res.status(500).json({ error: 'Failed to update deletion request' });
+    }
+  });
+  
+  // Healthz endpoint for Kubernetes/container health checks (no auth required)
+  app.get('/healthz', async (req: Request, res: Response) => {
+    try {
+      const dbHealthy = await storage.checkDatabaseConnection();
+      
+      if (dbHealthy) {
+        res.status(200).json({ status: 'ok' });
+      } else {
+        res.status(503).json({ status: 'unhealthy', reason: 'database' });
+      }
+    } catch (error) {
+      res.status(503).json({ status: 'error' });
+    }
+  });
+  
+  // Audit logs endpoint for admin UI
+  app.get('/api/audit-logs', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      
+      // Only daycare leaders can view audit logs
+      if (user.role !== 'daycareleader' && user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Only administrators can view audit logs' });
+      }
+      
+      const limit = parseInt(req.query.limit as string) || 100;
+      const offset = parseInt(req.query.offset as string) || 0;
+      
+      // Regular admin sees only their daycare's logs
+      // Super admin sees all logs but no personal data
+      const daycareId = user.role === 'super_admin' ? undefined : user.daycareId || undefined;
+      
+      const logs = await storage.getAuditLogs(daycareId, limit, offset);
+      
+      // Sanitize logs - remove any metadata that might contain PII
+      const sanitizedLogs = logs.map(log => ({
+        id: log.id,
+        timestamp: log.timestamp,
+        actorRole: log.actorRole,
+        action: log.action,
+        entityType: log.entityType,
+        entityIdHash: log.entityIdHash,
+        // Explicitly exclude metadata to prevent PII exposure
+      }));
+      
+      res.json(sanitizedLogs);
+    } catch (error) {
+      console.error('Error fetching audit logs:', error);
+      res.status(500).json({ error: 'Failed to fetch audit logs' });
+    }
+  });
+
+  const httpServer = createServer(app);
+
+  return httpServer;
+}
