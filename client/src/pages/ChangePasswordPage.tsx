@@ -16,7 +16,7 @@ import { Lock, KeyRound, ShieldCheck } from "lucide-react";
 
 export default function ChangePasswordPage() {
   const { t } = useTranslation();
-  const { updateUser, needsPasswordChange, user, logout } = useAuth();
+  const { updateUser, needsPasswordChange, user, token, login } = useAuth();
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const redirectPathRef = useRef('/dashboard');
@@ -46,15 +46,30 @@ export default function ChangePasswordPage() {
 
   const changePasswordMutation = useMutation({
     mutationFn: async (data: { currentPassword: string; newPassword: string }) => {
-      return await apiRequest('POST', '/api/auth/change-password', data);
+      // apiRequest already parses the JSON body.
+      return (await apiRequest('POST', '/api/auth/change-password', data)) as { token?: string };
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       toast({
         title: t('success'),
         description: t('passwordChanged'),
       });
-      // Kirjaa käyttäjä ulos salasanan vaihdon jälkeen
-      logout();
+
+      // Changing a password ends every session, including this one, so the server
+      // returns a replacement token for this device. Storing it keeps the user
+      // signed in; previously the page signed them out entirely, which sent someone
+      // completing a password change they were required to make all the way back to
+      // the municipality picker to start over.
+      if (result?.token && user) {
+        login(user, result.token);
+        updateUser({ passwordNeedsReset: false });
+        setLocation(redirectPathRef.current);
+        return;
+      }
+
+      // No replacement token: the local one is dead, so a fresh sign-in is the only
+      // way forward.
+      setLocation('/');
     },
     onError: (error: Error) => {
       toast({

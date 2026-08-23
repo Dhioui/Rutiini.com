@@ -67,6 +67,9 @@ interface AuthRequest extends Request {
   user?: User;
 }
 
+/** How long a signed-in session lasts, for both the JWT and its session-token row. */
+const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
+
 async function authenticateToken(req: AuthRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -339,12 +342,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Reset failed login attempts on successful login
       await storage.resetFailedLoginAttempts(user.id);
       
-      // Generate JWT token (7 days = 604800 seconds)
-      const token = generateToken(user.id, 604800);
+      const token = generateToken(user.id, SESSION_TTL_SECONDS);
       
       // Create session token for secure logout
       const tokenHash = hashSessionToken(token);
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+      const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000);
       await storage.createSessionToken(user.id, tokenHash, expiresAt);
       
       // Update last login timestamp
@@ -412,12 +414,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Reset failed login attempts on successful login
       await storage.resetFailedLoginAttempts(user.id);
       
-      // Generate JWT token (7 days = 604800 seconds)
-      const token = generateToken(user.id, 604800);
+      const token = generateToken(user.id, SESSION_TTL_SECONDS);
       
       // Create session token for secure logout
       const tokenHash = hashSessionToken(token);
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+      const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000);
       await storage.createSessionToken(user.id, tokenHash, expiresAt);
       
       // Update last login timestamp
@@ -517,10 +518,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Update password and clear passwordNeedsReset flag
       await storage.updateUserPassword(user.id, newPasswordHash);
-      
+
+      // Changing a password must end every other session. Someone who changes their
+      // password because it may have leaked expects that to lock out whoever else
+      // holds it; previously all existing sessions stayed valid for their full seven
+      // days, so the password change accomplished nothing against an active intruder.
+      await storage.deleteUserSessionTokens(user.id);
+
+      // The caller's own session was just invalidated along with the rest, so issue a
+      // replacement for this device. Without it the client is silently holding a dead
+      // token, which is why the page used to sign the user out and send them back to
+      // the very first screen after a change they were required to make.
+      const token = generateToken(user.id, SESSION_TTL_SECONDS);
+      await storage.createSessionToken(
+        user.id,
+        hashSessionToken(token),
+        new Date(Date.now() + SESSION_TTL_SECONDS * 1000)
+      );
+
       await logAudit(user.id, user.role, user.daycareId, 'UPDATE', 'password');
       
-      res.json({ success: true, message: 'Password changed successfully' });
+      res.json({ success: true, message: 'Password changed successfully', token });
     } catch (error) {
       res.status(400).json({ error: 'Invalid request' });
     }
