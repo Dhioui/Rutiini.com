@@ -42,7 +42,7 @@ export function ChildrenPage() {
       setGroupId('');
       toast({
         title: t('success'),
-        description: t('childName') + ' ' + t('save'),
+        description: t('childAdded'),
       });
     },
   });
@@ -96,7 +96,11 @@ export function ChildrenPage() {
       .slice(0, 2);
   };
 
-  const canAddChildren = user?.role === 'daycareleader' || user?.role === 'staff' || user?.role === 'super_admin';
+  // Matches canCreateChildren on the server, which allows the daycare leader only.
+  // Offering the button to staff produced a filled-in form that failed with 403 on
+  // save, and offering it to a super admin contradicts the rule that they never
+  // touch personal data.
+  const canAddChildren = user?.role === 'daycareleader';
 
   return (
     <div className="space-y-6">

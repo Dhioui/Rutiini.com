@@ -108,7 +108,11 @@ export function EntriesPage() {
     }
   };
 
-  const canCreateEntry = user?.role === 'daycareleader' || user?.role === 'staff' || user?.role === 'super_admin';
+  // Mirrors the server rule. super_admin is excluded deliberately: the API
+  // rejects it and logs ACCESS_DENIED, and the product's GDPR position is that
+  // a super admin never reaches personal data. Offering the control anyway put a
+  // button in front of them that could only ever fail.
+  const canCreateEntry = user?.role === 'daycareleader' || user?.role === 'staff';
 
   if (!canCreateEntry) {
     // t('error') renders as a bare "Virhe", which reads as a malfunction rather

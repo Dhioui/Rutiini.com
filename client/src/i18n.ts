@@ -705,6 +705,12 @@ const resources = {
       // identifier itself -- 'daycareleader' was showing untranslated.
       daycareleader: 'Daycare Leader',
       super_admin: 'Super Admin',
+
+      // Request failures shown by the global mutation error handler.
+      networkError: 'Could not reach the server. Check your connection and try again.',
+      serverError: 'Something went wrong on the server. Please try again shortly.',
+      sessionExpired: 'Your session has expired. Please sign in again.',
+      childAdded: 'Child added',
     }
   },
   fi: {
@@ -1409,6 +1415,12 @@ const resources = {
       // identifier itself -- 'daycareleader' was showing untranslated.
       daycareleader: 'Päiväkodin johtaja',
       super_admin: 'Pääkäyttäjä',
+
+      // Request failures shown by the global mutation error handler.
+      networkError: 'Yhteys palvelimeen epäonnistui. Tarkista verkkoyhteys ja yritä uudelleen.',
+      serverError: 'Palvelimella tapahtui virhe. Yritä hetken kuluttua uudelleen.',
+      sessionExpired: 'Istunto on vanhentunut. Kirjaudu sisään uudelleen.',
+      childAdded: 'Lapsi lisättiin',
     }
   },
   sv: {
@@ -2111,6 +2123,12 @@ const resources = {
       // identifier itself -- 'daycareleader' was showing untranslated.
       daycareleader: 'Föreståndare',
       super_admin: 'Superadmin',
+
+      // Request failures shown by the global mutation error handler.
+      networkError: 'Kunde inte nå servern. Kontrollera anslutningen och försök igen.',
+      serverError: 'Ett fel uppstod på servern. Försök igen om en stund.',
+      sessionExpired: 'Din session har gått ut. Logga in igen.',
+      childAdded: 'Barnet har lagts till',
     }
   },
   ar: {
@@ -2813,6 +2831,12 @@ const resources = {
       // identifier itself -- 'daycareleader' was showing untranslated.
       daycareleader: 'مدير الحضانة',
       super_admin: 'المدير العام',
+
+      // Request failures shown by the global mutation error handler.
+      networkError: 'تعذّر الوصول إلى الخادم. تحقّق من الاتصال وحاول مرة أخرى.',
+      serverError: 'حدث خطأ في الخادم. حاول مرة أخرى بعد قليل.',
+      sessionExpired: 'انتهت صلاحية جلستك. يرجى تسجيل الدخول مرة أخرى.',
+      childAdded: 'تمت إضافة الطفل',
     }
   },
   ru: {
@@ -3515,6 +3539,12 @@ const resources = {
       // identifier itself -- 'daycareleader' was showing untranslated.
       daycareleader: 'Заведующий',
       super_admin: 'Суперадминистратор',
+
+      // Request failures shown by the global mutation error handler.
+      networkError: 'Не удалось связаться с сервером. Проверьте подключение и повторите попытку.',
+      serverError: 'На сервере произошла ошибка. Повторите попытку чуть позже.',
+      sessionExpired: 'Сессия истекла. Войдите в систему заново.',
+      childAdded: 'Ребёнок добавлен',
     }
   },
   so: {
@@ -4220,6 +4250,12 @@ const resources = {
       // identifier itself -- 'daycareleader' was showing untranslated.
       daycareleader: 'Inkoode',
       super_admin: 'Super Admin',
+
+      // Request failures shown by the global mutation error handler.
+      networkError: 'Lama gaari karin serverka. Hubi xiriirka oo isku day mar kale.',
+      serverError: 'Khalad ayaa ka dhacay serverka. Fadlan isku day mar kale wax yar ka dib.',
+      sessionExpired: 'Fadhigaagu wuu dhacay. Fadlan mar kale soo gal.',
+      childAdded: 'Cunugga waa lagu daray',
     }
   }
 };
