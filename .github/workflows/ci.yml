@@ -90,12 +90,50 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Production refuses to start unconfigured. Prove that here rather than
+      # discovering it on a deployment: this job previously failed because the
+      # smoke test below started the production build without SMTP_HOST, which is
+      # exactly what the guard exists to prevent.
+      - name: Production refuses to start unconfigured
+        env:
+          NODE_ENV: production
+          PORT: '5001'
+        run: |
+          set -uo pipefail
+
+          # Refusing for some *other* reason would be a false pass, so the
+          # expected variable name has to appear in the message.
+          expect_refusal() {
+            local label="$1"; shift
+            local output status
+            # timeout, because a regressed guard means the server *starts* and
+            # listens forever; the job must fail fast, not hang until it is killed.
+            output=$(timeout 30 env "$@" node dist/index.js 2>&1) && status=0 || status=$?
+            if [ "$status" -eq 0 ] || [ "$status" -eq 124 ]; then
+              echo "::error::server started without $label"
+              exit 1
+            fi
+            if ! grep -q "$label must be set in production" <<<"$output"; then
+              echo "::error::exited without naming $label:"
+              echo "$output"
+              exit 1
+            fi
+            echo "  $label -> refused as expected"
+          }
+
+          expect_refusal "JWT_SECRET" SMTP_HOST=localhost
+          expect_refusal "SMTP_HOST" JWT_SECRET=ci-secret-long-enough-to-pass-the-production-check
+
       # Smoke test against the production build: the server must start, serve the
       # login screen's municipality list, and accept every seeded role. This is
       # what a prospect does in the first two minutes of a demo.
       - name: Smoke test the production build
         env:
           JWT_SECRET: ci-secret-long-enough-to-pass-the-production-check
+          # Satisfies the production guard. Nothing in this smoke test sends mail,
+          # so the host is never contacted.
+          SMTP_HOST: localhost
+          APP_URL: http://localhost:5000
           NODE_ENV: production
           PORT: '5000'
         run: |
