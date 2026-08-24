@@ -27,6 +27,13 @@ Sen jälkeen:
   (tai `./build-android.sh`)
 - **iOS:** avaa `ios/App/App.xcworkspace` Xcodessa → Product → Archive
 
+Buildaus on aina kaksivaiheinen: ensin `build:mobile` (web-tiedostot), sitten
+Android Studio / Xcode (natiivipaketti). Web-tiedostot eivät ole versionhallinnassa
+-- ne ovat buildin tulos -- joten tuoreessa klonissa niitä ei ole ennen ensimmäistä
+`build:mobile`-ajoa. `android/build-release.sh` ja `.bat` tarkistavat tämän ja
+kieltäytyvät, koska ilman niitä syntyisi asennuskelpoinen sovellus jonka ruutu on
+tyhjä.
+
 ---
 
 ## 2. Mitä sinun pitää tehdä ennen ensimmäistä julkaisua

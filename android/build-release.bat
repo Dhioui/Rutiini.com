@@ -73,6 +73,25 @@ if not exist "keystore.properties" (
     echo keystore.properties found
 )
 
+REM The web assets are build output and are not in version control, so a fresh
+REM download has none. Gradle would package the app without them and produce an
+REM installable app whose webview has nothing to load -- a blank screen on the
+REM phone, with nothing in the build output to warn about it.
+if not exist "app\src\main\assets\public\index.html" (
+    echo.
+    echo ERROR: the web app has not been built into this project yet.
+    echo.
+    echo   Run this first, in the project folder, with your server address:
+    echo.
+    echo       set VITE_API_URL=https://your-server.fi
+    echo       npm run build:mobile
+    echo.
+    echo   Building now would produce an app with a blank screen.
+    echo.
+    pause
+    exit /b 1
+)
+
 echo.
 echo Step 1: Cleaning old builds...
 call gradlew.bat clean

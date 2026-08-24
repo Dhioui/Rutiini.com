@@ -20,6 +20,24 @@ if [ -z "$JAVA_HOME" ]; then
     fi
 fi
 
+# The web assets are build output and are not in version control, so a fresh
+# clone has none. Gradle would happily package the app without them and produce
+# an installable APK whose webview has nothing to load -- a blank screen on the
+# phone, and nothing in the build output to warn about it.
+ASSETS="app/src/main/assets/public/index.html"
+if [ ! -f "$ASSETS" ]; then
+    echo ""
+    echo "ERROR: the web app has not been built into this project yet."
+    echo ""
+    echo "  Run this first, from the project root, with the address of your server:"
+    echo ""
+    echo "      VITE_API_URL=https://your-server.fi npm run build:mobile"
+    echo ""
+    echo "  Building now would produce an app with a blank screen."
+    echo ""
+    exit 1
+fi
+
 echo ""
 echo "Step 1: Cleaning old builds..."
 ./gradlew clean
