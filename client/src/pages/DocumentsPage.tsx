@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { useToast } from '@/hooks/use-toast';
 import { FileText, Plus, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
+import { apiUrl } from '@/lib/api';
 
 interface Document {
   id: number;
@@ -52,7 +53,7 @@ export function DocumentsPage() {
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
-      const res = await fetch(url, { headers, credentials: 'include' });
+      const res = await fetch(apiUrl(url), { headers, credentials: 'include' });
       if (!res.ok) {
         const text = await res.text() || res.statusText;
         throw new Error(`${res.status}: ${text}`);

@@ -1,5 +1,10 @@
 # Step-by-Step: Upload App Bundle to Google Play 📱
 
+> **Ennen buildia / before building:** aja `npm run build:mobile` (ei pelkkä
+> `npm run build`) ja anna `VITE_API_URL`, muuten sovellus ei tavoita palvelinta.
+> Katso [MOBILE_RELEASE.md](MOBILE_RELEASE.md).
+
+
 ## Your AAB File Location:
 ```
 android/app/build/outputs/bundle/release/app-release.aab

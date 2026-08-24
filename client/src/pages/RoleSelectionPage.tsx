@@ -7,6 +7,7 @@ import { LanguageToggle } from "@/components/LanguageToggle";
 import { Footer } from "@/components/Footer";
 import { useEffect, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { apiUrl } from '@/lib/api';
 
 export function RoleSelectionPage() {
   const { t } = useTranslation();
@@ -25,7 +26,7 @@ export function RoleSelectionPage() {
       }
 
       try {
-        const response = await fetch(`/api/daycares/${daycareCode.toLowerCase().trim()}`);
+        const response = await fetch(apiUrl(`/api/daycares/${daycareCode.toLowerCase().trim()}`));
         
         if (response.ok) {
           setIsValid(true);

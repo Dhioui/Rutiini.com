@@ -34,7 +34,7 @@ if %ERRORLEVEL% neq 0 (
 
 echo.
 echo Step 2: Building web app...
-call npm run build
+call npm run build:mobile
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Build failed!
     pause
@@ -43,7 +43,7 @@ if %ERRORLEVEL% neq 0 (
 
 echo.
 echo Step 3: Syncing to Android...
-call npx cap sync android
+REM build:mobile already ran "npx cap sync".
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Capacitor sync failed!
     pause

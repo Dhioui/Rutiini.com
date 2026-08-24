@@ -1,5 +1,10 @@
 # Step-by-Step: Delete Old File & Rebuild
 
+> **Ennen buildia / before building:** aja `npm run build:mobile` (ei pelkkä
+> `npm run build`) ja anna `VITE_API_URL`, muuten sovellus ei tavoita palvelinta.
+> Katso [MOBILE_RELEASE.md](MOBILE_RELEASE.md).
+
+
 ---
 
 ## STEP 1: Open File Explorer

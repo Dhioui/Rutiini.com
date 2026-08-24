@@ -13,6 +13,7 @@ import { Footer } from '@/components/Footer';
 import { Baby, ArrowLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import type { User } from '@shared/schema';
+import { apiUrl } from '@/lib/api';
 
 interface LoginPageProps {
   role: 'daycareleader' | 'staff' | 'guardian';
@@ -37,7 +38,7 @@ export function LoginPage({ role, daycareCode }: LoginPageProps) {
       }
 
       try {
-        const response = await fetch(`/api/daycares/${daycareCode.toLowerCase().trim()}`);
+        const response = await fetch(apiUrl(`/api/daycares/${daycareCode.toLowerCase().trim()}`));
         
         if (response.ok) {
           setIsValid(true);

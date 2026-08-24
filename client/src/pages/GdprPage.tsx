@@ -12,6 +12,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Download, Trash2, Shield, FileText, Clock, CheckCircle, XCircle, AlertCircle } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { formatLongDate } from "@/lib/dates";
+import { apiUrl } from '@/lib/api';
 
 type DeleteRequest = {
   id: number;
@@ -38,7 +39,7 @@ export default function GdprPage() {
 
   const exportMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch('/api/gdpr/export', {
+      const response = await fetch(apiUrl('/api/gdpr/export'), {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`,
         },

@@ -1,6 +1,7 @@
 import { QueryClient, QueryFunction, MutationCache } from "@tanstack/react-query";
 import { toast } from "@/hooks/use-toast";
 import i18n from "@/i18n";
+import { apiUrl } from "@/lib/api";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -30,7 +31,7 @@ export async function apiRequest(
     ...(data ? { "Content-Type": "application/json" } : {}),
   };
 
-  const res = await fetch(url, {
+  const res = await fetch(apiUrl(url), {
     method,
     headers,
     body: data ? JSON.stringify(data) : undefined,
@@ -49,7 +50,7 @@ export const getQueryFn: <T>(options: {
   async ({ queryKey }) => {
     const headers = getAuthHeaders();
 
-    const res = await fetch(queryKey.join("/") as string, {
+    const res = await fetch(apiUrl(queryKey.join("/") as string), {
       headers,
       credentials: "include",
     });

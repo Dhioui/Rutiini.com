@@ -38,4 +38,13 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+        Required from Android 13 (API 33) for a notification to be shown at all.
+        The push plugin asks for it at runtime but does not declare it, and an
+        undeclared permission cannot be granted: requestPermissions() returned
+        "denied" without ever showing the system prompt, so push notifications
+        silently did nothing on every current Android device.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>

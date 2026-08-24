@@ -1,5 +1,14 @@
 # Rutiini Mobile App Deployment Guide
 
+> **Ennen kuin buildaat:** sovellukselle on kerrottava palvelimen osoite.
+> Käytä `npm run build:mobile`, älä pelkkää `npm run build` -- puhelimessa ei ole
+> palvelinta, joten ilman osoitetta sovellus ei tavoita mitään, ei edes
+> kirjautumiseen. Katso [MOBILE_RELEASE.md](MOBILE_RELEASE.md).
+>
+> **Before building:** the app has to be told where the server is. Use
+> `npm run build:mobile`, not `npm run build`.
+
+
 This guide explains how to build and publish Rutiini to the Apple App Store and Google Play Store using Capacitor.
 
 ## Prerequisites
@@ -41,13 +50,15 @@ npm install
 
 Wait until it finishes (may take 2-5 minutes).
 
-### Step 4: Build the Web App
+### Step 4: Build the Web App for a Phone
 
 ```bash
-npm run build
+VITE_API_URL=https://rutiini.example.fi npm run build:mobile
 ```
 
-Wait until it says "build complete".
+`VITE_API_URL` is the address of your deployment -- the one a phone can reach over
+the internet. The app has no server of its own, so without this it cannot sign in.
+The command builds the web assets and syncs them into `android/` and `ios/`.
 
 ### Step 5: Sync to Android
 
@@ -250,8 +261,7 @@ cd android
 
 When you make changes:
 
-1. Build the web app: `npm run build`
-2. Sync changes: `npx cap sync`
+1. Build and sync: `VITE_API_URL=https://your-server.fi npm run build:mobile`
 3. Increment version in `android/app/build.gradle`:
    ```gradle
    versionCode 2

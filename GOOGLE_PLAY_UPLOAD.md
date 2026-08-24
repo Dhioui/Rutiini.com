@@ -1,5 +1,10 @@
 # Google Play Upload - READY NOW! 🚀
 
+> **Ennen buildia / before building:** aja `npm run build:mobile` (ei pelkkä
+> `npm run build`) ja anna `VITE_API_URL`, muuten sovellus ei tavoita palvelinta.
+> Katso [MOBILE_RELEASE.md](MOBILE_RELEASE.md).
+
+
 Your **10 authentic Rutiini screenshots** are ready in:
 ```
 attached_assets/generated_images/

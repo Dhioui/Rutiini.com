@@ -20,23 +20,21 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
-echo "Step 2: Building web app..."
-npm run build
+echo "Step 2: Building web app and syncing to Android..."
+echo ""
+echo "  The app needs to know where the server is. Set VITE_API_URL to your"
+echo "  deployment's address, for example:"
+echo ""
+echo "      VITE_API_URL=https://rutiini.example.fi ./build-android.sh"
+echo ""
+npm run build:mobile
 if [ $? -ne 0 ]; then
     echo "ERROR: Build failed!"
     exit 1
 fi
 
 echo ""
-echo "Step 3: Syncing to Android..."
-npx cap sync android
-if [ $? -ne 0 ]; then
-    echo "ERROR: Capacitor sync failed!"
-    exit 1
-fi
-
-echo ""
-echo "Step 4: Building Android release bundle..."
+echo "Step 3: Building Android release bundle..."
 cd android
 
 ./gradlew clean

@@ -1,5 +1,10 @@
 # START HERE - Android App Build Instructions
 
+> **Ennen buildia / before building:** aja `npm run build:mobile` (ei pelkkä
+> `npm run build`) ja anna `VITE_API_URL`, muuten sovellus ei tavoita palvelinta.
+> Katso [MOBILE_RELEASE.md](MOBILE_RELEASE.md).
+
+
 ## What You're Building
 A signed Android app bundle (.aab file) for Google Play Store submission.
 

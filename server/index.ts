@@ -9,6 +9,7 @@ import { fetchAndSaveMenu, fetchAndSaveMenuForDaycare } from "./menuScraper";
 import { storage } from "./storage";
 import { withAdvisoryLock, LOCK_KEYS } from "./db";
 import { assertEmailConfigured } from "./email";
+import { corsOrigin } from "./cors";
 import {
   apiLimiter,
   authLimiter,
@@ -54,7 +55,7 @@ app.use(helmet({
   },
 }));
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || '*',
+  origin: corsOrigin(process.env.CORS_ORIGIN),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],

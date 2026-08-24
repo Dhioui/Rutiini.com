@@ -25,7 +25,7 @@ if !ERRORLEVEL! neq 0 (
 )
 
 echo STEP 2 of 4: Building website...
-call npm run build
+call npm run build:mobile
 if !ERRORLEVEL! neq 0 (
     echo ERROR at step 2!
     pause
@@ -33,7 +33,7 @@ if !ERRORLEVEL! neq 0 (
 )
 
 echo STEP 3 of 4: Syncing to Android...
-call npx cap sync android
+REM build:mobile already ran "npx cap sync".
 if !ERRORLEVEL! neq 0 (
     echo ERROR at step 3!
     pause

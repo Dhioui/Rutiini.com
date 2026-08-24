@@ -1,5 +1,14 @@
 # Rutiini iOS App - Build & App Store Submission Guide
 
+> **Ennen kuin buildaat:** sovellukselle on kerrottava palvelimen osoite.
+> Käytä `npm run build:mobile`, älä pelkkää `npm run build` -- puhelimessa ei ole
+> palvelinta, joten ilman osoitetta sovellus ei tavoita mitään, ei edes
+> kirjautumiseen. Katso [MOBILE_RELEASE.md](MOBILE_RELEASE.md).
+>
+> **Before building:** the app has to be told where the server is. Use
+> `npm run build:mobile`, not `npm run build`.
+
+
 **Date:** December 2, 2025  
 **App:** Rutiini (Daycare Management System)  
 **Bundle ID:** com.rutiini.app  
@@ -31,10 +40,10 @@ git pull origin main  # Get the latest code with icon updates
 
 ### STEP 2: Rebuild Web App
 ```bash
-# In project root
-npm run build
+# In project root -- VITE_API_URL is the address the app will talk to.
+VITE_API_URL=https://rutiini.example.fi npm run build:mobile
 
-# This creates dist/public/ which iOS will use
+# This builds dist/public/ and copies it into ios/, iOS will use it
 ```
 
 ### STEP 3: Update Capacitor
@@ -282,8 +291,7 @@ Download: https://apps.apple.com/app/transporter/id1450874784
 ## NEXT STEPS
 
 1. ✅ Download updated code
-2. ✅ Run `npm run build` (web assets)
-3. ✅ Run `npx cap sync ios` (sync to iOS)
+2. ✅ Run `VITE_API_URL=https://your-server.fi npm run build:mobile` (web assets + sync)
 4. ✅ Open `ios/App/App.xcworkspace`
 5. ✅ Build Archive
 6. ✅ Upload to App Store Connect

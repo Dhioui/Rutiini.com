@@ -1,5 +1,10 @@
 # Rutiini Android Build - Easy Method
 
+> **Ennen buildia / before building:** aja `npm run build:mobile` (ei pelkkä
+> `npm run build`) ja anna `VITE_API_URL`, muuten sovellus ei tavoita palvelinta.
+> Katso [MOBILE_RELEASE.md](MOBILE_RELEASE.md).
+
+
 ## ONE-CLICK BUILD FOR WINDOWS
 
 **This is the easiest way to build your signed Android app bundle.**

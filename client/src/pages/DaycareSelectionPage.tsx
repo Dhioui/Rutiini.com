@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Building2, Shield, MapPin, ChevronRight, Loader2, Search } from "lucide-react";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { Footer } from "@/components/Footer";
+import { apiUrl } from '@/lib/api';
 
 interface PublicDaycare {
   id: number;
@@ -32,7 +33,7 @@ export function DaycareSelectionPage() {
     queryKey: ['/api/public/daycares', selectedMunicipality],
     queryFn: async () => {
       if (!selectedMunicipality) return [];
-      const res = await fetch(`/api/public/daycares?municipality=${encodeURIComponent(selectedMunicipality)}`);
+      const res = await fetch(apiUrl(`/api/public/daycares?municipality=${encodeURIComponent(selectedMunicipality)}`));
       if (!res.ok) throw new Error('Failed to fetch daycares');
       return res.json();
     },

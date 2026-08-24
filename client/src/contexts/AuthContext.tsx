@@ -1,6 +1,11 @@
 import { createContext, useContext, useState, type ReactNode } from 'react';
 import { useLocation } from 'wouter';
 import type { User } from '@shared/schema';
+import { apiUrl } from '@/lib/api';
+import {
+  registerPushNotifications,
+  unregisterPushNotifications,
+} from '@/lib/pushNotifications';
 
 interface AuthUser {
   id: number;
@@ -59,13 +64,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(token);
     localStorage.setItem('user', JSON.stringify(user));
     localStorage.setItem('token', token);
+
+    // Register the device for notifications now that there is a session to attach
+    // the token to. On the web this does nothing. It is deliberately not awaited:
+    // signing in must not wait on a permission prompt, and a device that declines
+    // notifications still signs in normally.
+    void registerPushNotifications();
   };
 
   const logout = async () => {
+    // Stop notifications for this device first: removing the push token is an
+    // authenticated request, so it has to happen while the session is still valid.
+    // Otherwise the token stays registered to the account that just signed out and
+    // the next person on a shared device keeps receiving its notifications.
+    await unregisterPushNotifications(token);
+
     // Call logout API to invalidate session token on server
     if (token) {
       try {
-        await fetch('/api/auth/logout', {
+        await fetch(apiUrl('/api/auth/logout'), {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
