@@ -712,6 +712,8 @@ const resources = {
       sessionExpired: 'Your session has expired. Please sign in again.',
       childAdded: 'Child added',
       gdprDenial: 'This view contains personal data, which a super admin cannot access (GDPR).',
+      entryIncident: 'Incident',
+      entryPlay: 'Play',
     }
   },
   fi: {
@@ -1423,6 +1425,8 @@ const resources = {
       sessionExpired: 'Istunto on vanhentunut. Kirjaudu sisään uudelleen.',
       childAdded: 'Lapsi lisättiin',
       gdprDenial: 'Tämä näkymä sisältää henkilötietoja, eikä pääkäyttäjällä ole niihin pääsyä (GDPR).',
+      entryIncident: 'Tapahtuma',
+      entryPlay: 'Leikki',
     }
   },
   sv: {
@@ -2132,6 +2136,8 @@ const resources = {
       sessionExpired: 'Din session har gått ut. Logga in igen.',
       childAdded: 'Barnet har lagts till',
       gdprDenial: 'Den här vyn innehåller personuppgifter som en superadmin inte har tillgång till (GDPR).',
+      entryIncident: 'Händelse',
+      entryPlay: 'Lek',
     }
   },
   ar: {
@@ -2841,6 +2847,8 @@ const resources = {
       sessionExpired: 'انتهت صلاحية جلستك. يرجى تسجيل الدخول مرة أخرى.',
       childAdded: 'تمت إضافة الطفل',
       gdprDenial: 'تحتوي هذه الصفحة على بيانات شخصية لا يمكن للمدير العام الوصول إليها (GDPR).',
+      entryIncident: 'حادثة',
+      entryPlay: 'لعب',
     }
   },
   ru: {
@@ -3550,6 +3558,8 @@ const resources = {
       sessionExpired: 'Сессия истекла. Войдите в систему заново.',
       childAdded: 'Ребёнок добавлен',
       gdprDenial: 'Этот раздел содержит персональные данные, к которым суперадминистратор не имеет доступа (GDPR).',
+      entryIncident: 'Происшествие',
+      entryPlay: 'Игра',
     }
   },
   so: {
@@ -4262,6 +4272,8 @@ const resources = {
       sessionExpired: 'Fadhigaagu wuu dhacay. Fadlan mar kale soo gal.',
       childAdded: 'Cunugga waa lagu daray',
       gdprDenial: 'Boggan wuxuu ka kooban yahay xog shakhsi ah oo super admin uusan heli karin (GDPR).',
+      entryIncident: 'Dhacdo',
+      entryPlay: 'Ciyaar',
     }
   }
 };

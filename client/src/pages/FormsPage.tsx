@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, FileText, Trash2, Eye, Pencil, CheckCircle, Loader2, X } from "lucide-react";
 import type { Form, FormField, Child } from "@shared/schema";
+import { formatDate } from "@/lib/dates";
 
 interface FormWithMeta extends Form {
   submissionCount?: number;
@@ -749,7 +750,7 @@ function FillFormDialog({
 }
 
 function ViewSubmissionsDialog({ form }: { form: Form }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
 
   const { data: submissions, isLoading } = useQuery<FormSubmission[]>({
     queryKey: ["/api/forms", form.id, "submissions"],
@@ -786,7 +787,7 @@ function ViewSubmissionsDialog({ form }: { form: Form }) {
                 )}
               </div>
               <Badge variant="outline">
-                {new Date(submission.submittedAt).toLocaleDateString("fi-FI")}
+                {formatDate(submission.submittedAt, i18n.language)}
               </Badge>
             </div>
           </CardHeader>

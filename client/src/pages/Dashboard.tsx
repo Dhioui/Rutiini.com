@@ -2,13 +2,35 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Baby, ClipboardList, Bus, Users, Building2, ShieldCheck, BarChart3, Moon, Utensils, TreePine, Clock, Smile, Calendar, FileText, TrendingUp, Download } from 'lucide-react';
+import { Baby, ClipboardList, Bus, Users, Building2, ShieldCheck, BarChart3, Moon, Utensils, TreePine, Clock, Smile, Calendar, FileText, TrendingUp, Download, AlertTriangle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Link } from 'wouter';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import type { Child, Entry, Trip, Daycare } from '@shared/schema';
+import { formatDate } from "@/lib/dates";
+
+/**
+ * The four entry types the application can record, with the hue identifying each.
+ *
+ * These are the types the entry form offers -- sleep, meal, play, incident. The
+ * dashboard used to break entries down by activity, arrival and mood instead,
+ * which nothing writes, so a leader saw three permanent zeroes while the play
+ * entries staff had actually logged went uncounted.
+ *
+ * Hues come from a categorical set checked with the palette validator rather than
+ * chosen by eye, and the order is the one that separates cleanly: the earlier set
+ * put indigo beside blue, which a protanope cannot tell apart. Colour rides on the
+ * icon only; every tile is also labelled in words.
+ */
+const ENTRY_BREAKDOWN = [
+  { key: 'sleep' as const, icon: Moon, className: 'text-[#2a78d6] dark:text-[#3987e5]' },
+  { key: 'meal' as const, icon: Utensils, className: 'text-[#eb6834] dark:text-[#d95926]' },
+  { key: 'play' as const, icon: TreePine, className: 'text-[#4a3aa7] dark:text-[#9085e9]' },
+  { key: 'incident' as const, icon: AlertTriangle, className: 'text-[#e34948] dark:text-[#e66767]' },
+];
+
 
 interface DaycareKPIStats {
   childrenCount: number;
@@ -20,9 +42,8 @@ interface DaycareKPIStats {
   entryBreakdown: {
     sleep: number;
     meal: number;
-    activity: number;
-    arrival: number;
-    mood: number;
+    play: number;
+    incident: number;
   };
   activeTrips: number;
   pendingForms: number;
@@ -37,12 +58,14 @@ function formatEntryDisplay(entry: Entry, t: (key: string) => string) {
     value = {};
   }
 
+  // Keyed by the types the entry form actually writes. It previously listed
+  // activity, arrival and mood, so a play or incident entry matched nothing and the
+  // list printed the raw identifier -- "play" -- next to the time.
   const typeConfig: Record<string, { icon: typeof Moon; color: string; bgColor: string }> = {
-    sleep: { icon: Moon, color: 'text-indigo-600', bgColor: 'bg-indigo-100 dark:bg-indigo-900/30' },
-    meal: { icon: Utensils, color: 'text-orange-600', bgColor: 'bg-orange-100 dark:bg-orange-900/30' },
-    activity: { icon: TreePine, color: 'text-green-600', bgColor: 'bg-green-100 dark:bg-green-900/30' },
-    arrival: { icon: Clock, color: 'text-blue-600', bgColor: 'bg-blue-100 dark:bg-blue-900/30' },
-    mood: { icon: Smile, color: 'text-pink-600', bgColor: 'bg-pink-100 dark:bg-pink-900/30' },
+    sleep: { icon: Moon, color: 'text-[#2a78d6]', bgColor: 'bg-[#2a78d6]/10' },
+    meal: { icon: Utensils, color: 'text-[#eb6834]', bgColor: 'bg-[#eb6834]/10' },
+    play: { icon: TreePine, color: 'text-[#4a3aa7]', bgColor: 'bg-[#4a3aa7]/10' },
+    incident: { icon: AlertTriangle, color: 'text-[#e34948]', bgColor: 'bg-[#e34948]/10' },
   };
 
   const config = typeConfig[entry.type] || { icon: ClipboardList, color: 'text-gray-600', bgColor: 'bg-gray-100' };
@@ -72,47 +95,28 @@ function formatEntryDisplay(entry: Entry, t: (key: string) => string) {
       const amountText = amounts[value.amount] || '';
       displayText = amountText ? `${mealName} - ${amountText}` : mealName;
       break;
-    case 'activity':
-      const activities: Record<string, string> = {
-        outdoor: t('activityOutdoor'),
-        indoor: t('activityIndoor'),
-        craft: t('activityCraft'),
-        reading: t('activityReading'),
-        music: t('activityMusic'),
-        sport: t('activitySport')
-      };
-      displayText = activities[value.activityType] || value.activityType || '';
-      break;
-    case 'arrival':
-      displayText = value.time ? `${t('arrivedAt')} ${value.time}` : '';
-      break;
-    case 'mood':
-      const moods: Record<string, string> = {
-        happy: t('moodHappy'),
-        calm: t('moodCalm'),
-        tired: t('moodTired'),
-        sad: t('moodSad')
-      };
-      displayText = moods[value.mood] || value.mood || '';
-      break;
     default:
-      displayText = entry.note || '';
+      // play and incident carry their detail as free text.
+      displayText = (typeof entry.value === 'string' ? entry.value : '') || entry.note || '';
   }
 
   // Add note if exists
-  if (entry.note && entry.type !== 'mood') {
-    displayText = displayText ? `${displayText}` : entry.note;
+  if (entry.note && !displayText) {
+    displayText = entry.note;
   }
 
+  // Labels for the types the entry form writes. The list previously covered
+  // activity, arrival and mood -- none of which are ever created -- so a play or
+  // incident entry fell through to `entry.type` and printed the identifier itself:
+  // guardians saw "play" beside the time on their own dashboard.
   const typeLabels: Record<string, string> = {
     sleep: t('entrySleep'),
     meal: t('entryMeal'),
-    activity: t('entryActivity'),
-    arrival: t('entryArrival'),
-    mood: t('entryMood')
+    play: t('entryPlay'),
+    incident: t('entryIncident'),
   };
 
-  return { Icon, config, displayText, typeLabel: typeLabels[entry.type] || entry.type };
+  return { Icon, config, displayText, typeLabel: typeLabels[entry.type] ?? entry.type };
 }
 
 interface AnonymizedStats {
@@ -328,7 +332,7 @@ function SuperAdminDashboard() {
 }
 
 function RegularDashboard() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { user } = useAuth();
   const isDaycareLeader = user?.role === 'daycareleader';
 
@@ -426,26 +430,50 @@ function RegularDashboard() {
       <div>
         <h1 className="text-3xl font-bold">{t('dashboard')}</h1>
         <div className="text-muted-foreground mt-1 flex items-center gap-2">
-          <span>{t('appTagline')} -</span>
+          <span>{t('appTagline')}</span>
           <Badge variant="secondary">{t(user?.role || 'guardian')}</Badge>
         </div>
       </div>
 
-      <div className={`grid gap-6 ${isDaycareLeader ? 'md:grid-cols-3 lg:grid-cols-6' : 'md:grid-cols-3'}`}>
+      {/*
+        Six figures across one row left each title a column barely wider than a
+        word, so "Poissaoloja tänään" wrapped to two lines and "Tämän päivän
+        merkinnät" to three. The cards ended up different heights and the numbers
+        sat at different levels, which is the first thing that reads as unfinished.
+        Two per row on a phone, six only once there is room, and a fixed height for
+        the title block so every figure lands on the same line however the label
+        wraps.
+      */}
+      <div className={`grid gap-4 grid-cols-2 ${isDaycareLeader ? 'lg:grid-cols-3 xl:grid-cols-6' : 'md:grid-cols-3'}`}>
         {stats.map((stat, index) => (
           <Card key={stat.title} className="border-0 shadow-md" data-testid={`card-stat-${index}`}>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 gap-2">
-              <CardTitle className="text-sm font-medium">{stat.title}</CardTitle>
-              <div className={`rounded-md p-2 ${stat.bgColor} dark:opacity-80`}>
-                <stat.icon className={`h-4 w-4 ${stat.color}`} />
+            {/*
+              Figure above label. Reserving a fixed height for the title was not
+              enough -- "Poissaoloja tänään" wraps to two lines and "Tämän päivän
+              merkinnät" to three, so any height that fits one leaves a gap in the
+              other. With the number on top, the labels can wrap to whatever depth
+              the language needs and the figures still line up across the row, in
+              every one of the six.
+            */}
+            <CardContent className="p-4 sm:p-5">
+              <div className="flex items-start justify-between gap-2">
+                {isLoading ? (
+                  <Skeleton className="h-8 w-16" />
+                ) : (
+                  <div
+                    className="text-2xl font-bold tabular-nums leading-none"
+                    data-testid={`text-stat-value-${index}`}
+                  >
+                    {stat.value}
+                  </div>
+                )}
+                <div className={`shrink-0 rounded-md p-2 ${stat.bgColor} dark:opacity-80`}>
+                  <stat.icon className={`h-4 w-4 ${stat.color}`} aria-hidden="true" />
+                </div>
               </div>
-            </CardHeader>
-            <CardContent>
-              {isLoading ? (
-                <Skeleton className="h-8 w-16" />
-              ) : (
-                <div className="text-2xl font-bold" data-testid={`text-stat-value-${index}`}>{stat.value}</div>
-              )}
+              <p className="mt-2 text-sm font-medium text-muted-foreground leading-snug">
+                {stat.title}
+              </p>
             </CardContent>
           </Card>
         ))}
@@ -461,32 +489,35 @@ function RegularDashboard() {
             <CardDescription>{t('todaysEntryTypes')}</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-5 gap-4">
-              <div className="text-center p-3 rounded-lg bg-indigo-100 dark:bg-indigo-900/30">
-                <Moon className="h-5 w-5 mx-auto text-indigo-600 mb-1" />
-                <div className="text-xl font-bold">{daycareStats.entryBreakdown.sleep}</div>
-                <div className="text-xs text-muted-foreground">{t('entrySleep')}</div>
-              </div>
-              <div className="text-center p-3 rounded-lg bg-orange-100 dark:bg-orange-900/30">
-                <Utensils className="h-5 w-5 mx-auto text-orange-600 mb-1" />
-                <div className="text-xl font-bold">{daycareStats.entryBreakdown.meal}</div>
-                <div className="text-xs text-muted-foreground">{t('entryMeal')}</div>
-              </div>
-              <div className="text-center p-3 rounded-lg bg-green-100 dark:bg-green-900/30">
-                <TreePine className="h-5 w-5 mx-auto text-green-600 mb-1" />
-                <div className="text-xl font-bold">{daycareStats.entryBreakdown.activity}</div>
-                <div className="text-xs text-muted-foreground">{t('entryActivity')}</div>
-              </div>
-              <div className="text-center p-3 rounded-lg bg-blue-100 dark:bg-blue-900/30">
-                <Clock className="h-5 w-5 mx-auto text-blue-600 mb-1" />
-                <div className="text-xl font-bold">{daycareStats.entryBreakdown.arrival}</div>
-                <div className="text-xs text-muted-foreground">{t('entryArrival')}</div>
-              </div>
-              <div className="text-center p-3 rounded-lg bg-pink-100 dark:bg-pink-900/30">
-                <Smile className="h-5 w-5 mx-auto text-pink-600 mb-1" />
-                <div className="text-xl font-bold">{daycareStats.entryBreakdown.mood}</div>
-                <div className="text-xs text-muted-foreground">{t('entryMood')}</div>
-              </div>
+            {/*
+              These are stat tiles, not a chart. Each was previously a filled pastel
+              card, which read as a children's app rather than a system a
+              municipality buys, and two of the five were the same blue -- sleep
+              (indigo) beside arrival (blue) -- so the colour told you nothing.
+
+              The hues now come from a validated categorical set (checked for
+              colour-vision separation, not chosen by eye), and they identify the
+              type through the icon only. The count itself wears the normal text
+              colour, so the numbers read as one column of figures. Every tile keeps
+              its written label, which is what makes the colour safe to rely on at
+              all.
+            */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+              {ENTRY_BREAKDOWN.map(({ key, icon: Icon, className }) => (
+                <div
+                  key={key}
+                  className="flex flex-col items-center gap-1 rounded-lg border bg-card p-3 text-center"
+                  data-testid={`tile-breakdown-${key}`}
+                >
+                  <Icon className={`h-5 w-5 ${className}`} aria-hidden="true" />
+                  <div className="text-xl font-semibold tabular-nums">
+                    {daycareStats.entryBreakdown[key]}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {t(`entry${key.charAt(0).toUpperCase()}${key.slice(1)}`)}
+                  </div>
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
@@ -636,7 +667,7 @@ function RegularDashboard() {
                         <p className="text-xs text-muted-foreground">{trip.location}</p>
                       </div>
                       <span className="text-xs text-muted-foreground">
-                        {new Date(trip.date).toLocaleDateString()}
+                        {formatDate(trip.date, i18n.language)}
                       </span>
                     </div>
                   ))}

@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Download, Trash2, Shield, FileText, Clock, CheckCircle, XCircle, AlertCircle } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { formatLongDate } from "@/lib/dates";
 
 type DeleteRequest = {
   id: number;
@@ -90,17 +91,8 @@ export default function GdprPage() {
     },
   });
 
-  const formatDate = (dateString: string) => {
-    const locale = i18n.language === 'fi' ? 'fi-FI' : 
-                   i18n.language === 'sv' ? 'sv-SE' :
-                   i18n.language === 'ar' ? 'ar-SA' :
-                   i18n.language === 'ru' ? 'ru-RU' : 'en-US';
-    return new Date(dateString).toLocaleDateString(locale, {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  };
+  // Shared with the rest of the app; the copy that lived here left out Somali.
+  const formatDate = (dateString: string) => formatLongDate(dateString, i18n.language);
 
   const getStatusBadge = (status: string) => {
     switch (status) {

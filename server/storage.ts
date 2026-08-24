@@ -217,9 +217,8 @@ export interface IStorage {
     entryBreakdown: {
       sleep: number;
       meal: number;
-      activity: number;
-      arrival: number;
-      mood: number;
+      play: number;
+      incident: number;
     };
     activeTrips: number;
     pendingForms: number;
@@ -1368,9 +1367,8 @@ export class DatabaseStorage implements IStorage {
     entryBreakdown: {
       sleep: number;
       meal: number;
-      activity: number;
-      arrival: number;
-      mood: number;
+      play: number;
+      incident: number;
     };
     activeTrips: number;
     pendingForms: number;
@@ -1457,12 +1455,15 @@ export class DatabaseStorage implements IStorage {
     ]);
     
     const countsByEntryType = new Map(entryBreakdownRows.map((row) => [row.type, row.total]));
+    // The four types the application can actually record, as offered by the entry
+    // form. The breakdown previously counted 'activity', 'arrival' and 'mood',
+    // which nothing ever writes, so a leader's dashboard reported three permanent
+    // zeroes and never counted the play entries that do exist.
     const entryBreakdown = {
       sleep: countsByEntryType.get('sleep') ?? 0,
       meal: countsByEntryType.get('meal') ?? 0,
-      activity: countsByEntryType.get('activity') ?? 0,
-      arrival: countsByEntryType.get('arrival') ?? 0,
-      mood: countsByEntryType.get('mood') ?? 0,
+      play: countsByEntryType.get('play') ?? 0,
+      incident: countsByEntryType.get('incident') ?? 0,
     };
 
     // entriesToday counts every entry logged today, including types absent from the

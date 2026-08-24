@@ -107,9 +107,17 @@ function AuthenticatedLayout({ children }: { children: ReactNode }) {
           Skip to main content
         </a>
         <AppSidebar />
-        <div className="flex flex-col flex-1">
+        {/*
+          The column scrolls as a whole, rather than main scrolling inside a fixed
+          column with the footer pinned beneath it. Pinned, the footer -- company
+          name, business ID, address, phone, three links and a copyright line --
+          held roughly a quarter of a phone screen at all times and squeezed the
+          content into what was left. It now sits after the content where it
+          belongs, and the header stays put so the navigation is always reachable.
+        */}
+        <div className="flex flex-col flex-1 overflow-y-auto">
           <header 
-            className="flex items-center justify-between gap-2 p-4 border-b"
+            className="sticky top-0 z-20 flex items-center justify-between gap-2 p-4 border-b bg-background"
             role="banner"
             aria-label="Site header"
           >
@@ -123,7 +131,7 @@ function AuthenticatedLayout({ children }: { children: ReactNode }) {
           </header>
           <main 
             id="main-content" 
-            className="flex-1 overflow-y-auto p-6"
+            className="flex-1 p-4 sm:p-6"
             role="main"
             aria-label="Main content"
             tabIndex={-1}

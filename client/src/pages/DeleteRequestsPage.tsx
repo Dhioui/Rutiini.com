@@ -11,6 +11,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Trash2, Shield, Clock, CheckCircle, XCircle, AlertCircle, User } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useState } from "react";
+import { formatLongDate } from "@/lib/dates";
 
 type DeleteRequest = {
   id: number;
@@ -61,17 +62,8 @@ export default function DeleteRequestsPage() {
     },
   });
 
-  const formatDate = (dateString: string) => {
-    const locale = i18n.language === 'fi' ? 'fi-FI' : 
-                   i18n.language === 'sv' ? 'sv-SE' :
-                   i18n.language === 'ar' ? 'ar-SA' :
-                   i18n.language === 'ru' ? 'ru-RU' : 'en-US';
-    return new Date(dateString).toLocaleDateString(locale, {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  };
+  // Shared with the rest of the app; the copy that lived here left out Somali.
+  const formatDate = (dateString: string) => formatLongDate(dateString, i18n.language);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
