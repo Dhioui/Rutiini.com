@@ -3,6 +3,7 @@ import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { useTranslation } from "react-i18next";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { LanguageToggle } from "@/components/LanguageToggle";
@@ -52,6 +53,32 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
     return <Redirect to="/change-password" />;
   }
   
+  return <>{children}</>;
+}
+
+/**
+ * Screens built around personal data.
+ *
+ * Every one of these endpoints rejects a super admin and logs ACCESS_DENIED, which
+ * is the whole point of the role: the product's GDPR position is that the operator
+ * can see anonymised statistics and nothing else. The pages still rendered for
+ * them, though, so a super admin saw "Children -- 0 children" and an empty
+ * messaging screen. Nothing leaked, but it reads as "you have access, there is
+ * simply nothing here" rather than "this is not yours to see" -- exactly the wrong
+ * impression when a municipality is auditing the separation.
+ */
+function PersonalDataRoute({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  const { t } = useTranslation();
+
+  if (user?.role === 'super_admin') {
+    return (
+      <div className="p-8 text-center" data-testid="text-personal-data-blocked">
+        <p className="text-muted-foreground">{t('gdprDenial')}</p>
+      </div>
+    );
+  }
+
   return <>{children}</>;
 }
 
@@ -172,7 +199,9 @@ function Router() {
       <Route path="/children">
         <ProtectedRoute>
           <AuthenticatedLayout>
-            <ChildrenPage />
+            <PersonalDataRoute>
+              <ChildrenPage />
+            </PersonalDataRoute>
           </AuthenticatedLayout>
         </ProtectedRoute>
       </Route>
@@ -180,7 +209,9 @@ function Router() {
       <Route path="/children/:id">
         <ProtectedRoute>
           <AuthenticatedLayout>
-            <ChildTrackingPage />
+            <PersonalDataRoute>
+              <ChildTrackingPage />
+            </PersonalDataRoute>
           </AuthenticatedLayout>
         </ProtectedRoute>
       </Route>
@@ -188,7 +219,9 @@ function Router() {
       <Route path="/children/:id/details">
         <ProtectedRoute>
           <AuthenticatedLayout>
-            <ChildDetailPage />
+            <PersonalDataRoute>
+              <ChildDetailPage />
+            </PersonalDataRoute>
           </AuthenticatedLayout>
         </ProtectedRoute>
       </Route>
@@ -196,7 +229,9 @@ function Router() {
       <Route path="/entries/new">
         <ProtectedRoute>
           <AuthenticatedLayout>
-            <EntriesPage />
+            <PersonalDataRoute>
+              <EntriesPage />
+            </PersonalDataRoute>
           </AuthenticatedLayout>
         </ProtectedRoute>
       </Route>
@@ -204,7 +239,9 @@ function Router() {
       <Route path="/trips">
         <ProtectedRoute>
           <AuthenticatedLayout>
-            <TripsPage />
+            <PersonalDataRoute>
+              <TripsPage />
+            </PersonalDataRoute>
           </AuthenticatedLayout>
         </ProtectedRoute>
       </Route>
@@ -260,7 +297,9 @@ function Router() {
       <Route path="/absences">
         <ProtectedRoute>
           <AuthenticatedLayout>
-            <AbsencesPage />
+            <PersonalDataRoute>
+              <AbsencesPage />
+            </PersonalDataRoute>
           </AuthenticatedLayout>
         </ProtectedRoute>
       </Route>
@@ -268,7 +307,9 @@ function Router() {
       <Route path="/messages">
         <ProtectedRoute>
           <AuthenticatedLayout>
-            <MessagesPage />
+            <PersonalDataRoute>
+              <MessagesPage />
+            </PersonalDataRoute>
           </AuthenticatedLayout>
         </ProtectedRoute>
       </Route>
@@ -276,7 +317,9 @@ function Router() {
       <Route path="/documents">
         <ProtectedRoute>
           <AuthenticatedLayout>
-            <DocumentsPage />
+            <PersonalDataRoute>
+              <DocumentsPage />
+            </PersonalDataRoute>
           </AuthenticatedLayout>
         </ProtectedRoute>
       </Route>
@@ -292,7 +335,9 @@ function Router() {
       <Route path="/forms">
         <ProtectedRoute>
           <AuthenticatedLayout>
-            <FormsPage />
+            <PersonalDataRoute>
+              <FormsPage />
+            </PersonalDataRoute>
           </AuthenticatedLayout>
         </ProtectedRoute>
       </Route>
