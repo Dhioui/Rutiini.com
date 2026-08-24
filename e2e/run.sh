@@ -17,6 +17,13 @@ ADMIN_URL="${E2E_ADMIN_URL:-postgres://rutiini:rutiini@localhost:5432/postgres}"
 export DATABASE_URL="${E2E_DATABASE_URL:-postgres://rutiini:rutiini@localhost:5432/$DB}"
 export E2E_BASE="http://localhost:$PORT"
 export JWT_SECRET="${JWT_SECRET:-e2e-secret-long-enough-to-pass-the-production-check}"
+
+# A local SMTP sink stands in for a mail provider, so the password reset journey can
+# be followed all the way from the request to the link in the message.
+export SMTP_HOST="${SMTP_HOST:-localhost}"
+export SMTP_PORT="${SMTP_PORT:-2530}"
+export SMTP_SECURE=false
+export APP_URL="${APP_URL:-http://localhost:$PORT}"
 export PORT NODE_ENV=development
 
 SCRIPTS=("${@:-journeys.mjs pages.mjs}")

@@ -714,6 +714,12 @@ const resources = {
       gdprDenial: 'This view contains personal data, which a super admin cannot access (GDPR).',
       entryIncident: 'Incident',
       entryPlay: 'Play',
+
+      // Password reset page reached from the email link.
+      backToLogin: 'Back to sign in',
+      resetCompleteSignIn: 'Your password has been changed. You can now sign in with it.',
+      resetLinkInvalid: 'The reset link is missing or invalid. Request a new one from the sign-in page.',
+      resetPassword: 'Set a new password',
     }
   },
   fi: {
@@ -1427,6 +1433,12 @@ const resources = {
       gdprDenial: 'Tämä näkymä sisältää henkilötietoja, eikä pääkäyttäjällä ole niihin pääsyä (GDPR).',
       entryIncident: 'Tapahtuma',
       entryPlay: 'Leikki',
+
+      // Password reset page reached from the email link.
+      backToLogin: 'Takaisin kirjautumiseen',
+      resetCompleteSignIn: 'Salasanasi on vaihdettu. Voit nyt kirjautua sisään uudella salasanalla.',
+      resetLinkInvalid: 'Palautuslinkki puuttuu tai on virheellinen. Pyydä uusi linkki kirjautumissivulta.',
+      resetPassword: 'Aseta uusi salasana',
     }
   },
   sv: {
@@ -2138,6 +2150,12 @@ const resources = {
       gdprDenial: 'Den här vyn innehåller personuppgifter som en superadmin inte har tillgång till (GDPR).',
       entryIncident: 'Händelse',
       entryPlay: 'Lek',
+
+      // Password reset page reached from the email link.
+      backToLogin: 'Tillbaka till inloggning',
+      resetCompleteSignIn: 'Ditt lösenord har ändrats. Du kan nu logga in med det.',
+      resetLinkInvalid: 'Återställningslänken saknas eller är ogiltig. Begär en ny från inloggningssidan.',
+      resetPassword: 'Ange ett nytt lösenord',
     }
   },
   ar: {
@@ -2849,6 +2867,12 @@ const resources = {
       gdprDenial: 'تحتوي هذه الصفحة على بيانات شخصية لا يمكن للمدير العام الوصول إليها (GDPR).',
       entryIncident: 'حادثة',
       entryPlay: 'لعب',
+
+      // Password reset page reached from the email link.
+      backToLogin: 'العودة إلى تسجيل الدخول',
+      resetCompleteSignIn: 'تم تغيير كلمة المرور. يمكنك الآن تسجيل الدخول بها.',
+      resetLinkInvalid: 'رابط إعادة التعيين مفقود أو غير صالح. اطلب رابطًا جديدًا من صفحة تسجيل الدخول.',
+      resetPassword: 'تعيين كلمة مرور جديدة',
     }
   },
   ru: {
@@ -3560,6 +3584,12 @@ const resources = {
       gdprDenial: 'Этот раздел содержит персональные данные, к которым суперадминистратор не имеет доступа (GDPR).',
       entryIncident: 'Происшествие',
       entryPlay: 'Игра',
+
+      // Password reset page reached from the email link.
+      backToLogin: 'Вернуться ко входу',
+      resetCompleteSignIn: 'Пароль изменён. Теперь вы можете войти с новым паролем.',
+      resetLinkInvalid: 'Ссылка для сброса отсутствует или недействительна. Запросите новую на странице входа.',
+      resetPassword: 'Задать новый пароль',
     }
   },
   so: {
@@ -4274,6 +4304,12 @@ const resources = {
       gdprDenial: 'Boggan wuxuu ka kooban yahay xog shakhsi ah oo super admin uusan heli karin (GDPR).',
       entryIncident: 'Dhacdo',
       entryPlay: 'Ciyaar',
+
+      // Password reset page reached from the email link.
+      backToLogin: 'Ku laabo soo gelitaanka',
+      resetCompleteSignIn: 'Furahaaga sirta ah waa la beddelay. Hadda waad ku soo geli kartaa.',
+      resetLinkInvalid: 'Xiriirka dib u dejinta wuu maqan yahay ama waa khaldan yahay. Ka codso mid cusub boggga soo gelitaanka.',
+      resetPassword: 'Deji furaha sirta ah oo cusub',
     }
   }
 };

@@ -38,6 +38,7 @@ import DeleteRequestsPage from "@/pages/DeleteRequestsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { PrivacyPolicyPage } from "@/pages/PrivacyPolicyPage";
 import { TermsOfServicePage } from "@/pages/TermsOfServicePage";
+import ResetPasswordPage from "@/pages/ResetPasswordPage";
 import NotFound from "@/pages/not-found";
 import type { ReactNode } from "react";
 
@@ -188,6 +189,12 @@ function Router() {
         ) : (
           <SuperAdminLoginPage />
         )}
+      </Route>
+
+      {/* Where the password reset email links to. Public: the person following it
+          is by definition unable to sign in. */}
+      <Route path="/reset-password">
+        <ResetPasswordPage />
       </Route>
 
       <Route path="/change-password">

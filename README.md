@@ -73,6 +73,20 @@ downtime. It is idempotent and safe to re-run. Do **not** pass `-1` or
 `--single-transaction` — `CONCURRENTLY` cannot run inside a transaction. A new
 database created with `npm run db:push` already has these indexes.
 
+### Email
+
+Password reset needs an SMTP server. Set `SMTP_HOST` (and `SMTP_USER` /
+`SMTP_PASSWORD` if the server requires them) plus `APP_URL`, which is the public
+address the reset link points at.
+
+Production refuses to start without `SMTP_HOST`: unconfigured, a reset request is
+accepted, the user is told a link has been sent, and nothing arrives — an account
+nobody can recover. In development the transport is simply disabled and skipped
+sends are logged.
+
+Any SMTP server works, so the sender is yours to choose: the municipality's own
+mail server, or a provider with a data processing agreement and EU hosting.
+
 ### Running more than one instance
 
 Instances are stateless and can be scaled horizontally behind a load balancer.

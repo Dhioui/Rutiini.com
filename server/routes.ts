@@ -2,6 +2,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage, hashEntityId } from "./storage";
 import { readPagination, LIST_LIMITS } from "./pagination";
+import { sendEmail } from "./email";
 import { getCached, setCache, invalidateCache } from "./db";
 import fs from "fs";
 import path from "path";
@@ -66,6 +67,14 @@ async function logAudit(
 interface AuthRequest extends Request {
   user?: User;
 }
+
+/**
+ * Public address of this deployment, used to build links in outgoing email.
+ *
+ * A reset link pointing at localhost is useless to the person who receives it, so
+ * this must name the address users actually reach.
+ */
+const APP_URL = (process.env.APP_URL || 'http://localhost:5000').replace(/\/+$/, '');
 
 /** How long a signed-in session lasts, for both the JWT and its session-token row. */
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -573,11 +582,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
       
       await storage.setPasswordResetToken(user.id, resetTokenHash, expiresAt);
-      
-      // In production, this would send an email with the reset link
-      // For development, we log the token (never do this in production!)
-      console.log(`[DEV] Password reset token for ${email}: ${resetToken}`);
-      
+
+      // The token used to be written to the server log with a note saying an email
+      // would be sent in production. Nothing sent it, so the flow was a dead end,
+      // and a credential that grants account access sat in logs that operations
+      // staff and log shipping can read. It is now emailed and never logged.
+      const resetUrl = `${APP_URL}/reset-password?token=${encodeURIComponent(resetToken)}`;
+      await sendEmail({
+        to: user.email,
+        subject: 'Rutiini – salasanan palautus / password reset',
+        text: [
+          `Hei ${user.name},`,
+          '',
+          'Pyysit salasanan palautusta Rutiini-palveluun. Avaa alla oleva linkki:',
+          resetUrl,
+          '',
+          'Linkki on voimassa yhden tunnin. Jos et pyytänyt palautusta, voit jättää',
+          'tämän viestin huomiotta – salasanasi ei muutu.',
+          '',
+          '---',
+          `Hello ${user.name},`,
+          '',
+          'You asked to reset your Rutiini password. Open the link below:',
+          resetUrl,
+          '',
+          'The link is valid for one hour. If you did not request a reset you can',
+          'ignore this message; your password will not change.',
+        ].join('\n'),
+      });
+
       await logAudit(null, 'system', user.daycareId, 'CREATE', 'password_reset_token');
       
       res.json({ success: true, message: 'If the account exists, a reset link has been sent' });
@@ -617,7 +650,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Hash new password and update
       const newPasswordHash = await hashPassword(newPassword);
       await storage.updateUserPassword(user.id, newPasswordHash);
-      
+
+      // Spend the token. Without this the link in the email kept working for its
+      // full hour, so anyone who later read that mailbox -- or a forwarded copy of
+      // the message -- could set the password again.
+      await storage.clearPasswordResetToken(user.id);
+
+      // A reset is how someone recovers an account they may have lost control of,
+      // so it has to end every session, not just set a new password. Otherwise
+      // whoever was already signed in stays signed in for another seven days.
+      await storage.deleteUserSessionTokens(user.id);
+
       await logAudit(user.id, user.role, user.daycareId, 'UPDATE', 'password', undefined, { via: 'reset_token' });
       
       res.json({ success: true, message: 'Password has been reset successfully' });

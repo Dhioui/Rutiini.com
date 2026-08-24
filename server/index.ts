@@ -8,12 +8,18 @@ import { setupVite, serveStatic, log } from "./vite";
 import { fetchAndSaveMenu, fetchAndSaveMenuForDaycare } from "./menuScraper";
 import { storage } from "./storage";
 import { withAdvisoryLock, LOCK_KEYS } from "./db";
+import { assertEmailConfigured } from "./email";
 import {
   apiLimiter,
   authLimiter,
   passwordResetLimiter,
   publicApiLimiter,
 } from "./rateLimit";
+
+// Refuse to start a production deployment that cannot send password reset email.
+// Without it everything looks healthy until the first person forgets their password
+// and finds there is no way back into their account.
+assertEmailConfigured();
 
 const app = express();
 
