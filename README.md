@@ -87,6 +87,21 @@ sends are logged.
 Any SMTP server works, so the sender is yours to choose: the municipality's own
 mail server, or a provider with a data processing agreement and EU hosting.
 
+### Push notifications
+
+Optional. Set `FCM_SERVICE_ACCOUNT` to a Firebase service account key and
+notifications also reach phones; leave it unset and they appear in the app only.
+One Firebase project covers both platforms — add an app with the id
+`com.rutiini.app`, then take the key from **Project settings → Service accounts →
+Generate new private key**.
+
+iOS additionally needs an APNs key uploaded to Firebase (**Project settings →
+Cloud Messaging → Apple app configuration**), which requires an Apple Developer
+account. Android needs `google-services.json` in `android/app/`.
+
+Device tokens that Firebase reports as unregistered are deleted automatically, so
+uninstalled apps stop being retried.
+
 ### Running more than one instance
 
 Instances are stateless and can be scaled horizontally behind a load balancer.

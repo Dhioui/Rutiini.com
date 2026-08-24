@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage, hashEntityId } from "./storage";
 import { readPagination, LIST_LIMITS } from "./pagination";
 import { sendEmail } from "./email";
+import { sendPushToUsers } from "./push";
 import { getCached, setCache, invalidateCache } from "./db";
 import fs from "fs";
 import path from "path";
@@ -882,6 +883,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           relatedId: entry.id,
         }))
       );
+
+      // Also to their phones. Deliberately not awaited into the response: a
+      // notification that cannot be delivered must not fail the entry that was
+      // just saved, and sendPushToUsers never throws.
+      void sendPushToUsers(guardians.map((g) => g.id), {
+        title: child.name,
+        body: value,
+        data: { type: 'entry', entryId: String(entry.id), childId: String(child.id) },
+      });
       
       await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'entry', entry.id);
       res.json(entry);
@@ -971,6 +981,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         message: JSON.stringify({ tripTitle: trip.title, tripDate: trip.date, tripLocation: trip.location }),
         relatedId: trip.id,
       })));
+
+      void sendPushToUsers(guardianIds, {
+        title: trip.title,
+        body: `${trip.date} · ${trip.location}`,
+        data: { type: 'trip', tripId: String(trip.id) },
+      });
       
       await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'trip', trip.id);
       res.json(trip);
@@ -2074,6 +2090,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           relatedId: absence.id,
         }))
       );
+
+      void sendPushToUsers(staff.map((s) => s.id), {
+        title: child.name,
+        body: `${validatedData.type} · ${validatedData.date}`,
+        data: { type: 'absence', absenceId: String(absence.id) },
+      });
       
       await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'absence', absence.id);
       res.json(absence);
@@ -2208,6 +2230,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         title: 'new_message',
         message: JSON.stringify({ senderName: user.name }),
         relatedId: message.id,
+      });
+
+      void sendPushToUsers([validatedData.recipientId], {
+        title: user.name,
+        body: validatedData.content.slice(0, 120),
+        data: { type: 'message', messageId: String(message.id) },
       });
       
       await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'message', message.id);
