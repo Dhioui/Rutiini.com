@@ -39,10 +39,16 @@ to a shared default that would let anyone forge a session for any user.
 Brings up the application and its database together — nothing else required:
 
 ```bash
-cp .env.example .env          # set JWT_SECRET and POSTGRES_PASSWORD
+cp .env.example .env          # set JWT_SECRET, POSTGRES_PASSWORD and SMTP_HOST
 docker compose up -d
 docker compose exec app npm run db:push
+docker compose exec app npx tsx server/seed.ts    # optional demo data
 ```
+
+Compose runs the app in production mode, which refuses to start without
+`SMTP_HOST` -- unconfigured, a password reset is accepted and silently never
+delivered. For a local trial any value works, since nothing in a trial sends
+mail; `SMTP_HOST=localhost` is enough.
 
 ## Deploying
 

@@ -4,7 +4,7 @@
 # external service required. Suitable for evaluation, for a pilot, and as the
 # starting point for a municipality that hosts the system itself.
 #
-#   cp .env.example .env         # then set JWT_SECRET
+#   cp .env.example .env         # then set JWT_SECRET and SMTP_HOST
 #   docker compose up -d
 #   docker compose exec app npm run db:push     # create the schema, once
 #   docker compose exec app npx tsx server/seed.ts   # optional demo data
