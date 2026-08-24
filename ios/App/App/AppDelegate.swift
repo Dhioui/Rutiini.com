@@ -33,6 +33,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Called when the application is about to terminate. Save data if appropriate. See also applicationDidEnterBackground:.
     }
 
+    // Push notification registration.
+    //
+    // Capacitor's push plugin listens for these two on NotificationCenter; without
+    // them iOS hands the device token to the AppDelegate and it goes nowhere, so
+    // PushNotifications.register() never fires its 'registration' listener and the
+    // app never obtains a token. Android worked, iOS silently did not.
+    func application(_ application: UIApplication,
+                     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        NotificationCenter.default.post(name: .capacitorDidRegisterForRemoteNotifications,
+                                        object: deviceToken)
+    }
+
+    func application(_ application: UIApplication,
+                     didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        NotificationCenter.default.post(name: .capacitorDidFailToRegisterForRemoteNotifications,
+                                        object: error)
+    }
+
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
         // Called when the app was launched with a url. Feel free to add additional processing here,
         // but if you want the App API to support tracking app url opens, make sure to keep this call
