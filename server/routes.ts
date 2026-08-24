@@ -80,6 +80,21 @@ const APP_URL = (process.env.APP_URL || 'http://localhost:5000').replace(/\/+$/,
 /** How long a signed-in session lasts, for both the JWT and its session-token row. */
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 
+/**
+ * A Content-Disposition value that survives the trip.
+ *
+ * Two of the report filenames are Finnish -- "merkinnät", "läsnäolo" -- and were
+ * written straight into the header. HTTP header values are Latin-1, so a raw ä
+ * there is not something a client can be expected to read back correctly, and
+ * whether it survives depends on the client. RFC 5987 is the defined way to say
+ * it: a plain ASCII form for anything old, and an explicitly UTF-8 encoded form
+ * beside it. Anyone calling the endpoint directly now gets the real name.
+ */
+function attachment(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '');
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
 async function authenticateToken(req: AuthRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -1789,7 +1804,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_children');
       
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="lapset-${new Date().toISOString().split('T')[0]}.csv"`);
+      res.setHeader('Content-Disposition', attachment(`lapset-${new Date().toISOString().split('T')[0]}.csv`));
       res.send(csv);
     } catch (error) {
       console.error('Error exporting children:', error);
@@ -1839,7 +1854,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_entries');
       
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="merkinnät-${start.toISOString().split('T')[0]}-${end.toISOString().split('T')[0]}.csv"`);
+      res.setHeader('Content-Disposition', attachment(`merkinnät-${start.toISOString().split('T')[0]}-${end.toISOString().split('T')[0]}.csv`));
       res.send(csv);
     } catch (error) {
       console.error('Error exporting entries:', error);
@@ -1887,7 +1902,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_absences');
       
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="poissaolot-${start.toISOString().split('T')[0]}-${end.toISOString().split('T')[0]}.csv"`);
+      res.setHeader('Content-Disposition', attachment(`poissaolot-${start.toISOString().split('T')[0]}-${end.toISOString().split('T')[0]}.csv`));
       res.send(csv);
     } catch (error) {
       console.error('Error exporting absences:', error);
@@ -1941,7 +1956,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_attendance');
       
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="läsnäolo-${start.toISOString().split('T')[0]}-${end.toISOString().split('T')[0]}.csv"`);
+      res.setHeader('Content-Disposition', attachment(`läsnäolo-${start.toISOString().split('T')[0]}-${end.toISOString().split('T')[0]}.csv`));
       res.send(csv);
     } catch (error) {
       console.error('Error exporting attendance:', error);
@@ -3125,7 +3140,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Return as downloadable JSON
       res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Content-Disposition', `attachment; filename="gdpr-export-${user.id}-${new Date().toISOString().split('T')[0]}.json"`);
+      res.setHeader('Content-Disposition', attachment(`gdpr-export-${user.id}-${new Date().toISOString().split('T')[0]}.json`));
       res.json(data);
     } catch (error) {
       console.error('Error exporting GDPR data:', error);

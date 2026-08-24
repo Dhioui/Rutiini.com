@@ -10,6 +10,8 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import type { Child, Entry, Trip, Daycare } from '@shared/schema';
 import { formatDate } from "@/lib/dates";
+import { downloadFile } from "@/lib/download";
+import { useToast } from "@/hooks/use-toast";
 
 /**
  * The four entry types the application can record, with the hue identifying each.
@@ -334,6 +336,28 @@ function SuperAdminDashboard() {
 function RegularDashboard() {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
+  const { toast } = useToast();
+
+  /**
+   * Fetch a report and hand it to the browser.
+   *
+   * These buttons navigated to the endpoint directly, which sent no Authorization
+   * header and so always answered 401 -- the leader saw a JSON error instead of a
+   * spreadsheet.
+   */
+  const runExport = async (path: string, fallbackName: string) => {
+    try {
+      await downloadFile(path, fallbackName);
+    } catch (error) {
+      console.error('Export failed:', error);
+      toast({
+        title: t('error'),
+        description: t('exportFailed'),
+        variant: 'destructive',
+      });
+    }
+  };
+
   const isDaycareLeader = user?.role === 'daycareleader';
 
   const { data: children, isLoading: childrenLoading } = useQuery<Child[]>({
@@ -537,7 +561,7 @@ function RegularDashboard() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.location.href = '/api/export/children'}
+                onClick={() => runExport('/api/export/children', 'lapset.csv')}
                 data-testid="button-export-children"
               >
                 <Baby className="h-4 w-4 mr-2" />
@@ -546,7 +570,7 @@ function RegularDashboard() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.location.href = '/api/export/entries'}
+                onClick={() => runExport('/api/export/entries', 'merkinnat.csv')}
                 data-testid="button-export-entries"
               >
                 <ClipboardList className="h-4 w-4 mr-2" />
@@ -555,7 +579,7 @@ function RegularDashboard() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.location.href = '/api/export/absences'}
+                onClick={() => runExport('/api/export/absences', 'poissaolot.csv')}
                 data-testid="button-export-absences"
               >
                 <Calendar className="h-4 w-4 mr-2" />
@@ -564,7 +588,7 @@ function RegularDashboard() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.location.href = '/api/export/attendance'}
+                onClick={() => runExport('/api/export/attendance', 'lasnaolo.csv')}
                 data-testid="button-export-attendance"
               >
                 <TrendingUp className="h-4 w-4 mr-2" />
