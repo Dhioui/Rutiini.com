@@ -24,10 +24,11 @@ if "%JAVA_HOME%"=="" (
     )
 )
 
-REM Set ANDROID_HOME
+REM Set ANDROID_HOME. Looked up under the current user's own AppData rather than
+REM one particular person's folder, which is where the installer puts it.
 if "%ANDROID_HOME%"=="" (
-    if exist "C:\Users\yaser\AppData\Local\Android\sdk" (
-        set "ANDROID_HOME=C:\Users\yaser\AppData\Local\Android\sdk"
+    if exist "%LOCALAPPDATA%\Android\Sdk" (
+        set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
         echo ANDROID_HOME set to: !ANDROID_HOME!
     )
 )

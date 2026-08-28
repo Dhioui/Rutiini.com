@@ -41,9 +41,9 @@ A signed Android app bundle (.aab file) for Google Play Store submission.
 - Press **Enter**
 
 ### Step 2: Navigate to Android Folder
-Copy and paste this (replace path if needed):
+Vaihda polku omaksesi — tämä on se kansio johon projekti on purettu:
 ```powershell
-cd "C:\Users\yaser\Downloads\Rutiini\Rutiini\android"
+cd "C:\polku\projektiin\android"
 ```
 
 ### Step 3: Set Java Location

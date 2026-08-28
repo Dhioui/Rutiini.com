@@ -8,8 +8,32 @@ lopputulokseen; tämä korvaa ne siltä osin.
 
 ## 1. Buildaa aina näin
 
+**macOS ja Linux:**
+
 ```bash
 VITE_API_URL=https://oma-palvelimesi.fi npm run build:mobile
+```
+
+**Windows (cmd):** yllä oleva muoto ei toimi cmd:ssä eikä PowerShellissä —
+muuttuja asetetaan erikseen.
+
+```bat
+set VITE_API_URL=https://oma-palvelimesi.fi
+npm run build:mobile
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$env:VITE_API_URL = "https://oma-palvelimesi.fi"
+npm run build:mobile
+```
+
+Windowsilla helpoin tapa on kuitenkin `build-android.bat`, joka ottaa osoitteen
+suoraan argumenttina ja hoitaa koko ketjun allekirjoitettuun bundleen asti:
+
+```bat
+build-android.bat https://oma-palvelimesi.fi
 ```
 
 **Miksi tämä eikä `npm run build`:** selainversion tarjoilee sama palvelin kuin
