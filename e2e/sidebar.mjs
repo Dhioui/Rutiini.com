@@ -79,6 +79,22 @@ console.log('\n=== Työpöytä (1400x950) ===');
   if (after.length) fail(`sivupalkki sulkeutui: ${after.length}/${links.length} linkkiä ruudun ulkopuolella`);
   else ok(`kaikki ${links.length} linkkiä yhä näkyvissä koko kierroksen jälkeen (${page.url().replace(BASE, '')})`);
 
+  // Closing it on purpose must still work: the point is that navigating does not
+  // close it, not that it can no longer be closed.
+  const toggle = page.getByTestId('button-sidebar-toggle');
+  const first = links[0];
+  await toggle.click();
+  await page.waitForTimeout(600);
+  const collapsed = await page.getByTestId(first).first().boundingBox();
+  if (collapsed && collapsed.x >= 0) fail('sivupalkki ei sulkeutunut painikkeesta');
+  else ok('painike sulkee sivupalkin');
+
+  await toggle.click();
+  await page.waitForTimeout(600);
+  const reopened = await page.getByTestId(first).first().boundingBox();
+  if (!reopened || reopened.x < 0) fail('sivupalkki ei avautunut uudelleen painikkeesta');
+  else ok('painike avaa sivupalkin uudelleen');
+
   await ctx.close();
 }
 
