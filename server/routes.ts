@@ -5,6 +5,7 @@ import { readPagination, LIST_LIMITS } from "./pagination";
 import { sendEmail } from "./email";
 import { sendPushToUsers } from "./push";
 import { getCached, setCache, invalidateCache } from "./db";
+import { csvFile } from "./csv";
 import fs from "fs";
 import path from "path";
 import { loginSchema, superAdminLoginSchema, insertChildSchema, insertEntrySchema, insertTripSchema, insertTripResponseSchema, createUserSchema, insertDaycareSchema, insertAbsenceSchema, insertMessageSchema, insertDocumentSchema, insertDaycareGroupSchema, changePasswordSchema, insertFormSchema, insertFormSubmissionSchema, insertChildConsentSchema, insertMunicipalitySchema, updateMunicipalitySchema } from "@shared/schema";
@@ -1786,8 +1787,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       const children = await storage.getChildren(user.daycareId);
       
-      // Build CSV with BOM for Excel UTF-8 support
-      const BOM = '\uFEFF';
       const headers = ['ID', 'Nimi', 'Syntymäaika', 'Ryhmä'];
       const rows = await Promise.all(children.map(async (child) => {
         const group = child.groupId ? await storage.getGroupById(child.groupId) : null;
@@ -1796,10 +1795,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           child.name,
           child.birthdate ? new Date(child.birthdate).toLocaleDateString('fi-FI') : '',
           group?.name || ''
-        ].map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',');
+        ];
       }));
       
-      const csv = BOM + headers.join(',') + '\n' + rows.join('\n');
+      const csv = csvFile(headers, rows);
       
       await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_children');
       
@@ -1833,7 +1832,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const staff = await storage.getUsersByIds(staffIds);
       const staffMap = new Map(staff.map(s => [s.id, s]));
       
-      const BOM = '\uFEFF';
       const headers = ['Päivämäärä', 'Aika', 'Lapsi', 'Tyyppi', 'Sisältö', 'Merkinnyt'];
       const rows = entries.map((entry) => {
         const child = childMap.get(entry.childId);
@@ -1846,10 +1844,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           entry.type,
           entry.value || '',
           entryStaff?.name || ''
-        ].map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',');
+        ];
       });
       
-      const csv = BOM + headers.join(',') + '\n' + rows.join('\n');
+      const csv = csvFile(headers, rows);
       
       await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_entries');
       
@@ -1883,7 +1881,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const reporters = await storage.getUsersByIds(reporterIds);
       const reporterMap = new Map(reporters.map(r => [r.id, r]));
       
-      const BOM = '\uFEFF';
       const headers = ['Päivämäärä', 'Lapsi', 'Tyyppi', 'Syy', 'Ilmoittaja'];
       const rows = absences.map((absence) => {
         const child = childMap.get(absence.childId);
@@ -1894,10 +1891,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           absence.type || '',
           absence.reason || '',
           reporter?.name || ''
-        ].map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',');
+        ];
       });
       
-      const csv = BOM + headers.join(',') + '\n' + rows.join('\n');
+      const csv = csvFile(headers, rows);
       
       await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_absences');
       
@@ -1942,16 +1939,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       });
       
-      const BOM = '\uFEFF';
       const headers = ['Lapsi', 'Läsnäolopäiviä', 'Poissaolopäiviä', 'Merkintöjä yhteensä'];
       const rows = attendanceSummary.map(summary => [
         summary.name,
         summary.arrivalDays,
         summary.absenceDays,
         summary.totalEntries
-      ].map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','));
+      ]);
       
-      const csv = BOM + headers.join(',') + '\n' + rows.join('\n');
+      const csv = csvFile(headers, rows);
       
       await logAudit(user.id, user.role, user.daycareId, 'VIEW', 'export_attendance');
       
