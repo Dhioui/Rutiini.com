@@ -56,9 +56,13 @@ const report = () =>
     body: { childId, date, type: 'sickness', reason: 'kuumetta' },
   });
 
+// 200 when this script got there first, 409 when writes.mjs already reported the
+// same child today: the database is reset per run, not per script. Either way the
+// day is now on record exactly once, which is what the rest of this checks.
 const first = await report();
 if (first.status === 200) ok('ensimmäinen poissaoloilmoitus hyväksyttiin');
-else fail(`ensimmäinen ilmoitus palautti ${first.status}`);
+else if (first.status === 409) ok('päivä oli jo ilmoitettu aiemmassa skriptissä (409)');
+else fail(`ensimmäinen ilmoitus palautti ${first.status}, odotettiin 200 tai 409`);
 
 const second = await report();
 if (second.status === 409) ok('toinen ilmoitus samalle päivälle hylättiin (409)');
