@@ -22,7 +22,9 @@ Requires a reachable PostgreSQL (`E2E_ADMIN_URL`, default
 |---|---|
 | `lib.mjs` | browser setup, error collection, the sign-in and password-change flows |
 | `journeys.mjs` | sign-in per role, then clicking through the sidebar |
+| `sidebar.mjs` | that the sidebar survives being used: it stays put on a desktop, and the drawer closes on a phone |
 | `pages.mjs` | every authenticated route per role, checking what actually renders |
+| `mobile.mjs` | the same routes at phone size, looking for anything that pushes the page wider than the screen |
 | `writes.mjs` | the write actions: adding a child, logging an entry, sending a message, reporting an absence |
 | `superadmin.mjs` | the super admin's own pages, and that the personal-data screens stay closed to it |
 | `reset.mjs` | password reset from the request through the emailed link to signing in again |

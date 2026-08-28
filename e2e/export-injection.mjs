@@ -28,16 +28,26 @@ async function api(path, { token, method = 'GET', body } = {}) {
   return res;
 }
 
-// The leader is the only role allowed to export.
-const login = await api('/api/auth/login/daycareleader', {
-  method: 'POST',
-  body: { email: 'admin@aurinko.fi', password: 'password123', daycareCode: 'aurinko' },
-});
-if (!login.ok) {
-  console.log(`  ONGELMA: kirjautuminen epäonnistui (${login.status})`);
+// The leader is the only role allowed to export. Both passwords are tried for the
+// same reason signIn takes a list: the database is reset once per run, so if an
+// earlier script has already signed this account in, it is past its mandatory first
+// password change.
+async function signInAsLeader() {
+  for (const password of ['password123', 'Johtaja2026!Turva']) {
+    const res = await api('/api/auth/login/daycareleader', {
+      method: 'POST',
+      body: { email: 'admin@aurinko.fi', password, daycareCode: 'aurinko' },
+    });
+    if (res.ok) return (await res.json()).token;
+  }
+  return null;
+}
+
+const token = await signInAsLeader();
+if (!token) {
+  console.log('  ONGELMA: kirjautuminen epäonnistui');
   process.exit(1);
 }
-const { token } = await login.json();
 
 const created = await api('/api/children', {
   token,

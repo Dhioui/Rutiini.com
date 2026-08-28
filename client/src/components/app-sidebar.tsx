@@ -38,7 +38,7 @@ export function AppSidebar() {
   const { t } = useTranslation();
   const { user, logout } = useAuth();
   const [location] = useLocation();
-  const { setOpen, state } = useSidebar();
+  const { setOpenMobile, isMobile, state } = useSidebar();
 
   const isCollapsed = state === 'collapsed';
 
@@ -165,6 +165,25 @@ export function AppSidebar() {
 
   const menuGroups = getMenuGroups();
 
+  /**
+   * On a phone the menu is a drawer covering the screen, so it has to be dismissed
+   * once a destination has been chosen. On a wider screen the sidebar is the
+   * navigation itself and stays where it is.
+   *
+   * This used to call setOpen(false) for every click, on every screen size. setOpen
+   * drives the *desktop* sidebar, so the effect was the opposite of the intent at
+   * both sizes: on a desktop the sidebar slid off-screen after every click -- and
+   * the state is kept in a cookie, so it stayed shut on the next visit too -- while
+   * on a phone the drawer, which is a separate Sheet on openMobile, was never
+   * dismissed at all and went on covering the page that had just been opened.
+   *
+   * Deferred by a tick so the click has finished being handled -- and the
+   * navigation started -- before the drawer unmounts underneath it.
+   */
+  const closeDrawerAfterNavigating = () => {
+    if (isMobile) setTimeout(() => setOpenMobile(false), 0);
+  };
+
   const isItemActive = (url: string) => location === url;
   const isGroupActive = (items: MenuItem[]) => items.some(item => isItemActive(item.url));
 
@@ -231,7 +250,7 @@ export function AppSidebar() {
                                 <Link
                                   href={item.url}
                                   data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, '-')}`}
-                                  onClick={() => setTimeout(() => setOpen(false), 0)}
+                                  onClick={closeDrawerAfterNavigating}
                                 >
                                   <item.icon className="h-4 w-4" aria-hidden="true" />
                                   <span>{item.title}</span>
