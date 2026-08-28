@@ -1,64 +1,108 @@
 #!/bin/bash
+#
+# Rutiini Android release builder (macOS and Linux).
+#
+#   ./build-android.sh https://oma-palvelimesi.fi
+#
+# or with the address already in the environment:
+#
+#   VITE_API_URL=https://oma-palvelimesi.fi ./build-android.sh
+#
+# The Windows equivalent is build-android.bat.
+set -euo pipefail
+
+# Work from the folder this script lives in, so it does not matter where it is
+# run from.
+cd "$(dirname "$0")"
 
 echo "==============================================="
-echo "  Rutiini Android Build Script"
+echo "  Rutiini Android release builder"
 echo "==============================================="
-echo ""
+echo
 
-# Check if node is installed
 if ! command -v node &> /dev/null; then
-    echo "ERROR: Node.js is not installed!"
-    echo "Please install Node.js from https://nodejs.org/"
-    exit 1
+  echo "ERROR: Node.js is not installed. Get it from https://nodejs.org/"
+  exit 1
 fi
 
-echo "Step 1: Installing dependencies..."
+# The address may come as an argument or from the environment.
+if [ $# -ge 1 ]; then
+  export VITE_API_URL="$1"
+fi
+
+# A native build has no server to fall back on: the address is compiled into the
+# bundle. npm run build:mobile refuses without it, but saying so here means the
+# failure names this script's own usage rather than the inner one's.
+if [ -z "${VITE_API_URL:-}" ]; then
+  cat <<'MESSAGE'
+ERROR: the server address is missing.
+
+  The app is told at build time where its server is, so run either:
+
+      ./build-android.sh https://oma-palvelimesi.fi
+
+  or:
+
+      VITE_API_URL=https://oma-palvelimesi.fi ./build-android.sh
+
+MESSAGE
+  exit 1
+fi
+
+echo "Server address: $VITE_API_URL"
+echo
+
+echo "Step 1 of 4: installing dependencies..."
 npm install
-if [ $? -ne 0 ]; then
-    echo "ERROR: npm install failed!"
-    exit 1
-fi
 
-echo ""
-echo "Step 2: Building web app and syncing to Android..."
-echo ""
-echo "  The app needs to know where the server is. Set VITE_API_URL to your"
-echo "  deployment's address, for example:"
-echo ""
-echo "      VITE_API_URL=https://rutiini.example.fi ./build-android.sh"
-echo ""
+echo
+echo "Step 2 of 4: building the web app and syncing it into android/..."
+# This also runs "npx cap sync", so there is no separate sync step.
 npm run build:mobile
-if [ $? -ne 0 ]; then
-    echo "ERROR: Build failed!"
-    exit 1
+
+echo
+echo "Step 3 of 4: checking the signing key..."
+
+# Not created here. These are the credentials that sign the app for Google Play,
+# and the file is deliberately kept out of version control.
+if [ ! -f android/keystore.properties ]; then
+  cat <<'MESSAGE'
+ERROR: android/keystore.properties not found.
+
+  Create the signing key once:
+
+      cd android && node generate-keystore.cjs
+
+  Keep the generated .jks file and its password safe: losing them means you can
+  never update the app on Google Play again.
+
+MESSAGE
+  exit 1
 fi
 
-echo ""
-echo "Step 3: Building Android release bundle..."
-cd android
+if [ ! -f android/app/rutiini-release.jks ] && [ ! -f android/rutiini-release.jks ]; then
+  echo "ERROR: rutiini-release.jks not found in android/app/ or android/."
+  exit 1
+fi
+echo "Signing key found."
 
+echo
+echo "Step 4 of 4: building the release bundle. This takes several minutes..."
+cd android
 ./gradlew clean
 ./gradlew bundleRelease
-if [ $? -ne 0 ]; then
-    echo ""
-    echo "ERROR: Android build failed!"
-    echo ""
-    echo "Possible solutions:"
-    echo "1. Make sure Android Studio is installed"
-    echo "2. Set JAVA_HOME environment variable"
-    cd ..
-    exit 1
-fi
-
 cd ..
 
-echo ""
+echo
 echo "==============================================="
-echo "  BUILD SUCCESSFUL!"
+echo "  BUILD SUCCESSFUL"
 echo "==============================================="
-echo ""
-echo "Your signed Android App Bundle is located at:"
-echo "android/app/build/outputs/bundle/release/app-release.aab"
-echo ""
-echo "Upload this file to Google Play Console!"
-echo ""
+echo
+echo "Signed bundle for Google Play:"
+echo "  android/app/build/outputs/bundle/release/app-release.aab"
+echo
+echo "It talks to: $VITE_API_URL"
+echo
+echo "Remember to raise versionCode in android/app/build.gradle before each"
+echo "upload, or Google Play will refuse the file."
+echo

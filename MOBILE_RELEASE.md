@@ -1,8 +1,10 @@
 # Rutiini mobiilijulkaisu — App Store ja Google Play
 
-Tämä on ainoa ohje, jota tarvitset sovelluksen buildaamiseen puhelimelle. Muut
-mobiilidokumentit ovat vanhempia ja niiden buildikomennot ohjaavat väärään
-lopputulokseen; tämä korvaa ne siltä osin.
+Tämä on ainoa ohje, jota tarvitset sovelluksen buildaamiseen puhelimelle.
+Aiemmat päällekkäiset mobiiliohjeet on poistettu: ne neuvoivat komentoja jotka
+eivät enää toimineet, ja kahdeksan eri ohjetta samasta asiasta tarkoitti että
+väärän löytäminen oli todennäköisempää kuin oikean. iOS:n Xcode-vaiheet ovat
+erikseen tiedostossa [iOS_BUILD_GUIDE.md](iOS_BUILD_GUIDE.md).
 
 ---
 

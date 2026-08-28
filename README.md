@@ -170,6 +170,25 @@ npm run build    # production build
 Tests cover authentication, authorisation, validation, query shaping and
 translation completeness, and need no database.
 
+## Mobile apps
+
+The phone builds are a separate step from the server: a native build has no
+server of its own, so it is told the deployment's address at build time.
+
+```bash
+VITE_API_URL=https://your-server.fi npm run build:mobile   # macOS, Linux
+build-android.bat https://your-server.fi                   # Windows, end to end
+```
+
+[MOBILE_RELEASE.md](MOBILE_RELEASE.md) is the one guide for both platforms and
+covers the Windows command forms, signing, and what Google Play and the App
+Store need from you. [iOS_BUILD_GUIDE.md](iOS_BUILD_GUIDE.md) has the Xcode
+steps; iOS cannot be built without a Mac.
+
+CI builds an installable Android debug APK on every push and keeps it as an
+artifact, which is the quickest way onto a phone without a local Android
+toolchain.
+
 ## Project layout
 
 ```
