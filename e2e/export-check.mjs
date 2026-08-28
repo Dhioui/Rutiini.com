@@ -9,7 +9,7 @@ page.on('console', (m) => {
 
 await signIn(page, {
   daycare: 'aurinko', role: 'daycareleader',
-  email: 'admin@aurinko.fi', password: 'password123',
+  email: 'admin@aurinko.fi', password: ['password123', 'Johtaja2026!Turva'],
 });
 await changePasswordIfPrompted(page, 'password123', 'Johtaja2026!Turva');
 await page.goto(`${BASE}/dashboard`, { waitUntil: 'networkidle' });

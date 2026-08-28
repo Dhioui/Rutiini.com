@@ -23,7 +23,7 @@ for (const r of ROLES) {
   const { browser, page, errors } = await newSession();
   console.log(`\n=== ${r.label} (${r.role}) ===`);
   try {
-    await signIn(page, { daycare: 'aurinko', role: r.role, email: r.email, password: 'password123' });
+    await signIn(page, { daycare: 'aurinko', role: r.role, email: r.email, password: ['password123', r.next] });
     await changePasswordIfPrompted(page, 'password123', r.next);
 
     for (const path of PAGES) {

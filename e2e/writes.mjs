@@ -37,7 +37,7 @@ const isOk = (t) => /onnistui|success|lisätt|lähetet|tallenn|luotu|ilmoitett/i
   const { browser, page, errors } = await newSession();
   console.log('\n=== HENKILÖKUNTA: merkintä + viesti ===');
   try {
-    await signIn(page, { daycare: 'aurinko', role: 'staff', email: 'maria@aurinko.fi', password: 'password123' });
+    await signIn(page, { daycare: 'aurinko', role: 'staff', email: 'maria@aurinko.fi', password: ['password123', 'Maria2026!Turva'] });
     await changePasswordIfPrompted(page, 'password123', 'Maria2026!Turva');
 
     // --- merkintä ---
@@ -89,7 +89,7 @@ const isOk = (t) => /onnistui|success|lisätt|lähetet|tallenn|luotu|ilmoitett/i
   const { browser, page, errors } = await newSession();
   console.log('\n=== HUOLTAJA: poissaolo ===');
   try {
-    await signIn(page, { daycare: 'aurinko', role: 'guardian', email: 'anna@example.fi', password: 'password123' });
+    await signIn(page, { daycare: 'aurinko', role: 'guardian', email: 'anna@example.fi', password: ['password123', 'Anna2026!Turva'] });
     await changePasswordIfPrompted(page, 'password123', 'Anna2026!Turva');
 
     await page.goto(BASE + '/absences', { waitUntil: 'domcontentloaded' });

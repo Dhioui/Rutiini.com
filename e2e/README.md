@@ -27,13 +27,17 @@ Requires a reachable PostgreSQL (`E2E_ADMIN_URL`, default
 | `superadmin.mjs` | the super admin's own pages, and that the personal-data screens stay closed to it |
 | `reset.mjs` | password reset from the request through the emailed link to signing in again |
 | `export-check.mjs` | the four CSV report downloads, which used to answer 401 because the buttons navigated without the session |
+| `export-injection.mjs` | that a child named like a spreadsheet formula is exported as text, not as something Excel would run |
 
 These are not part of `npx vitest run`: they need a database and a browser, so
 they are run deliberately rather than on every commit.
 
-Run one script at a time. `run.sh` resets the database and stops any running
+Run one invocation at a time. `run.sh` resets the database and stops any running
 server before it starts, so two runs at once kill each other's server -- the
 symptom is `ERR_CONNECTION_REFUSED` in the middle of an otherwise healthy run.
-Passing several scripts to one invocation is also not the same as running them
-separately: `journeys.mjs` performs the mandatory first password change, so a
-later script signing in with the seeded password will be rejected.
+
+Several scripts may be passed to one invocation. The database is reset once per
+run rather than once per script, so an account that an earlier script has already
+used is past its mandatory first password change; `signIn` therefore accepts a
+list of passwords and tries the seeded one before the rotated one. A script that
+signs in as a new account should pass both for the same reason.

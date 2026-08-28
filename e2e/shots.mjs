@@ -10,7 +10,7 @@ const SHOTS = [
 
 for (const s of SHOTS) {
   const { browser, page } = await newSession();
-  await signIn(page, { daycare: 'aurinko', role: s.role, email: s.email, password: 'password123' });
+  await signIn(page, { daycare: 'aurinko', role: s.role, email: s.email, password: ['password123', s.next] });
   await changePasswordIfPrompted(page, 'password123', s.next);
   for (const p of s.pages) {
     await page.goto(BASE + p, { waitUntil: 'domcontentloaded' }).catch(() => {});

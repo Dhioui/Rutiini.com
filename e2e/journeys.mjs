@@ -41,7 +41,7 @@ async function walkNav(page, say) {
 }
 
 await journey('Huoltaja (Mikko, Aurinko)', async (page, say) => {
-  await signIn(page, { daycare: 'aurinko', role: 'guardian', email: 'mikko@example.fi', password: 'password123' });
+  await signIn(page, { daycare: 'aurinko', role: 'guardian', email: 'mikko@example.fi', password: ['password123', 'Mikko2026!Turva'] });
   await changePasswordIfPrompted(page, 'password123', 'Mikko2026!Turva');
   say('URL: ' + page.url());
   await walkNav(page, say);
@@ -49,7 +49,7 @@ await journey('Huoltaja (Mikko, Aurinko)', async (page, say) => {
 });
 
 await journey('Henkilökunta (Maria, Aurinko)', async (page, say) => {
-  await signIn(page, { daycare: 'aurinko', role: 'staff', email: 'maria@aurinko.fi', password: 'password123' });
+  await signIn(page, { daycare: 'aurinko', role: 'staff', email: 'maria@aurinko.fi', password: ['password123', 'Maria2026!Turva'] });
   await changePasswordIfPrompted(page, 'password123', 'Maria2026!Turva');
   say('URL: ' + page.url());
   await walkNav(page, say);
@@ -57,7 +57,7 @@ await journey('Henkilökunta (Maria, Aurinko)', async (page, say) => {
 });
 
 await journey('Johtaja (Admin, Aurinko)', async (page, say) => {
-  await signIn(page, { daycare: 'aurinko', role: 'daycareleader', email: 'admin@aurinko.fi', password: 'password123' });
+  await signIn(page, { daycare: 'aurinko', role: 'daycareleader', email: 'admin@aurinko.fi', password: ['password123', 'Johtaja2026!Turva'] });
   await changePasswordIfPrompted(page, 'password123', 'Johtaja2026!Turva');
   say('URL: ' + page.url());
   await walkNav(page, say);

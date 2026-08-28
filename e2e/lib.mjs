@@ -33,7 +33,17 @@ export const testids = async (page) => {
   return out.filter(Boolean);
 };
 
-/** Municipality -> daycare -> role -> credentials. */
+/**
+ * Municipality -> daycare -> role -> credentials.
+ *
+ * `password` may be a list. The first sign-in for an account is required to change
+ * its password, so an account is only on the seeded password until some script has
+ * used it: running two scripts in one pass (which `run.sh` does by default -- the
+ * database is reset per run, not per script) left the later one signing in with a
+ * password that no longer existed. It got a 401, carried on unauthenticated, and
+ * every page it then checked was reported as a fault of the page. Passing both the
+ * seeded and the rotated password makes a script work whether or not it is first.
+ */
 export async function signIn(page, { daycare, role, email, password, municipality = 'Helsinki' }) {
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1200);
@@ -47,10 +57,17 @@ export async function signIn(page, { daycare, role, email, password, municipalit
   await page.waitForTimeout(900);
   await page.getByTestId(`button-login-${role}`).click();
   await page.waitForTimeout(900);
-  await page.getByTestId('input-email').fill(email);
-  await page.getByTestId('input-password').fill(password);
-  await page.getByTestId('button-login').click();
-  await page.waitForTimeout(2200);
+
+  const candidates = Array.isArray(password) ? password : [password];
+  for (const candidate of candidates) {
+    await page.getByTestId('input-email').fill(email);
+    await page.getByTestId('input-password').fill(candidate);
+    await page.getByTestId('button-login').click();
+    await page.waitForTimeout(2200);
+    // The form is replaced on success, so its absence is what "signed in" looks like.
+    if ((await page.getByTestId('input-email').count()) === 0) break;
+  }
+
   return page.url();
 }
 
