@@ -36,9 +36,10 @@ async function session(viewport) {
   return { ctx, page };
 }
 
-const navLinks = async (page) => {
+/** `root` is a page or, on a phone, the drawer itself. */
+const navLinks = async (root) => {
   const out = [];
-  for (const el of await page.locator('[data-testid^="link-"]').all()) {
+  for (const el of await root.locator('[data-testid^="link-"]').all()) {
     const id = await el.getAttribute('data-testid');
     if (id && !/^link-(privacy|terms|contact)/.test(id)) out.push(id);
   }
@@ -111,7 +112,10 @@ console.log('\n=== Puhelin (390x844) ===');
     await toggle.click();
     await page.waitForTimeout(900);
 
-    const links = await navLinks(page);
+    // Scoped to the drawer: a page can carry its own link- testids, and those sit
+    // behind the open drawer with pointer-events disabled.
+    const drawer = page.locator('[data-mobile="true"]');
+    const links = await navLinks(drawer);
     if (links.length === 0) {
       fail('laatikko ei auennut: ei navigaatiolinkkejä');
     } else {
@@ -119,7 +123,7 @@ console.log('\n=== Puhelin (390x844) ===');
 
       const target = links.find((id) => id !== 'link-etusivu') ?? links[0];
       const before = page.url();
-      await page.getByTestId(target).first().click({ timeout: 6000 });
+      await drawer.locator(`[data-testid="${target}"]`).first().click({ timeout: 6000 });
       await page.waitForTimeout(1400);
 
       if (page.url() === before) fail(`${target}: klikkaus ei vienyt mihinkään`);

@@ -24,7 +24,7 @@ Requires a reachable PostgreSQL (`E2E_ADMIN_URL`, default
 | `journeys.mjs` | sign-in per role, then clicking through the sidebar |
 | `sidebar.mjs` | that the sidebar survives being used: it stays put on a desktop, and the drawer closes on a phone |
 | `pages.mjs` | every authenticated route per role, checking what actually renders |
-| `mobile.mjs` | the same routes at phone size, looking for anything that pushes the page wider than the screen |
+| `mobile.mjs` | every role's routes at 390px, looking for anything wider than the screen, plus that the drawer opens, takes a tap and closes |
 | `writes.mjs` | the write actions: adding a child, logging an entry, sending a message, reporting an absence |
 | `absences.mjs` | that reporting the same day twice is refused, and that the dashboard counts absent children rather than reports |
 | `superadmin.mjs` | the super admin's own pages, and that the personal-data screens stay closed to it |

@@ -3,8 +3,24 @@ import { chromium } from 'playwright';
 export const BASE = process.env.E2E_BASE || 'http://localhost:5100';
 const EXE = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 
-/** Noise that is environment, not application: this sandbox has no outbound network. */
-const IGNORED = [/fonts\.googleapis/, /ERR_CONNECTION_RESET/, /React DevTools/];
+/**
+ * Noise that is environment, not application.
+ *
+ * This sandbox has no outbound network and terminates TLS at a proxy the browser
+ * does not trust, so the Google Fonts stylesheet the app links fails one way or the
+ * other depending on how far the request got -- a reset, or a certificate error.
+ * Neither says anything about the application.
+ */
+const IGNORED = [
+  /fonts\.googleapis/,
+  /fonts\.gstatic/,
+  /ERR_CONNECTION_RESET/,
+  /ERR_CERT_AUTHORITY_INVALID/,
+  /React DevTools/,
+];
+
+/** True when a console line or failed request is the sandbox rather than the app. */
+export const isEnvironmentNoise = (text) => IGNORED.some((pattern) => pattern.test(text));
 
 export async function newSession() {
   const browser = await chromium.launch({ executablePath: EXE });
@@ -12,7 +28,7 @@ export async function newSession() {
   const page = await ctx.newPage();
   const errors = [];
   const note = (kind, text) => {
-    if (!IGNORED.some((r) => r.test(text))) errors.push(`[${kind}] ${text.slice(0, 160)}`);
+    if (!isEnvironmentNoise(text)) errors.push(`[${kind}] ${text.slice(0, 160)}`);
   };
   page.on('console', (m) => { if (m.type() === 'error') note('console', m.text()); });
   page.on('pageerror', (e) => note('pageerror', String(e)));

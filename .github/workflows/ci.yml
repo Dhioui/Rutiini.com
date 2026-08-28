@@ -4,6 +4,15 @@ on:
   push:
     branches: ['**']
   pull_request:
+  # Run by hand to get an installable APK aimed at a particular deployment: the
+  # server address has to be baked in at build time, so it cannot be changed
+  # afterwards without rebuilding.
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'Server the app should talk to, e.g. https://rutiini.example.fi'
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -168,3 +177,55 @@ jobs:
           sign_in daycareleader admin@aurinko.fi
           sign_in staff maria@aurinko.fi
           sign_in guardian anna@example.fi
+
+  android:
+    name: Android app compiles and packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # Capacitor's Android project targets Java 21.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - run: npm ci
+
+      # Two-phase by necessity: the web assets are build output and are not in
+      # version control, so a fresh clone has none and Gradle would package an app
+      # whose webview has nothing to load. The address is required rather than
+      # assumed, because a native build has no server to fall back on -- see
+      # scripts/build-mobile.mjs. The default here only has to be a valid https
+      # address for the bundle to compile against; supply a real one through the
+      # MOBILE_API_URL variable, or when running the workflow by hand, to get an
+      # APK that can actually talk to a deployment.
+      - name: Build the web bundle and sync it into the native projects
+        env:
+          VITE_API_URL: ${{ inputs.api_url || vars.MOBILE_API_URL || 'https://rutiini.example.fi' }}
+        run: npm run build:mobile
+
+      - name: Confirm the assets really landed in the Android project
+        run: |
+          test -f android/app/src/main/assets/public/index.html \
+            || { echo "::error::cap sync did not produce the web assets"; exit 1; }
+          echo "Assets present: $(du -sh android/app/src/main/assets/public | cut -f1)"
+
+      - name: Assemble the debug APK
+        run: ./gradlew assembleDebug --no-daemon
+        working-directory: android
+
+      # The thing a person can actually install, kept from every build so a
+      # regression in the native packaging is visible rather than theoretical.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rutiini-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
