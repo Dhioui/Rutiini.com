@@ -65,7 +65,7 @@ import {
   type InsertSessionToken,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, inArray, or, desc, asc, count, sql, isNull, gte, lte } from "drizzle-orm";
+import { eq, and, inArray, or, desc, asc, count, countDistinct, sql, isNull, gte, lte } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { PgTable, AnyPgColumn } from "drizzle-orm/pg-core";
 import crypto from "crypto";
@@ -134,6 +134,7 @@ export interface IStorage {
   getAllAbsences(): Promise<Absence[]>;
   getAbsencesByChild(childId: number): Promise<Absence[]>;
   getAbsencesByDateRange(daycareId: number, startDate: Date, endDate: Date): Promise<Absence[]>;
+  getAbsenceForChildOnDate(childId: number, date: string): Promise<Absence | undefined>;
   createAbsence(absence: InsertAbsence): Promise<Absence>;
   
   getMessages(userId: number, daycareId: number, limit?: number, offset?: number): Promise<Message[]>;
@@ -793,6 +794,22 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(absences.date));
   }
 
+  /**
+   * An absence already on record for this child on this day, if there is one.
+   *
+   * Reporting the same day twice is easy to do -- a tap that does not appear to
+   * register, a form submitted again on a slow connection -- and each report
+   * notified the whole staff again and put another row in the day's list.
+   */
+  async getAbsenceForChildOnDate(childId: number, date: string): Promise<Absence | undefined> {
+    const [absence] = await db
+      .select()
+      .from(absences)
+      .where(and(eq(absences.childId, childId), eq(absences.date, date)))
+      .limit(1);
+    return absence;
+  }
+
   async createAbsence(insertAbsence: InsertAbsence): Promise<Absence> {
     const [absence] = await db
       .insert(absences)
@@ -1412,8 +1429,13 @@ export class DatabaseStorage implements IStorage {
             eq(users.role, 'guardian')
           )
         ),
+      // Children absent today, not rows written today. The same child can be
+      // reported more than once for one day -- a guardian taps the button twice, or
+      // reports again because they were not sure the first one saved -- and counting
+      // rows made every extra report look like another child away. Three reports for
+      // one of three children read as nobody present at all.
       db
-        .select({ total: count() })
+        .select({ total: countDistinct(absences.childId) })
         .from(absences)
         .where(
           and(
@@ -1472,8 +1494,11 @@ export class DatabaseStorage implements IStorage {
 
     const childrenCount = childrenCountRows[0]?.total ?? 0;
     const absencesToday = todayAbsenceRows[0]?.total ?? 0;
-    const attendanceRate = childrenCount > 0 
-      ? Math.round(((childrenCount - absencesToday) / childrenCount) * 100) 
+    // Clamped because a child can be removed from the daycare while an absence
+    // reported for them earlier today is still on record, which would otherwise
+    // put a negative percentage on the dashboard.
+    const attendanceRate = childrenCount > 0
+      ? Math.max(0, Math.round(((childrenCount - absencesToday) / childrenCount) * 100))
       : 100;
     
     return {

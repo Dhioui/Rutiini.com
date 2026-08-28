@@ -2086,8 +2086,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: 'Unauthorized' });
       }
       
+      // The same day reported twice notified the whole staff again and put another
+      // row in the day's list, so one child away read as several. Easy to do from a
+      // phone: a tap that does not look like it registered, or a form sent again on
+      // a slow connection.
+      const alreadyReported = await storage.getAbsenceForChildOnDate(
+        validatedData.childId,
+        validatedData.date,
+      );
+      if (alreadyReported) {
+        return res.status(409).json({
+          error: 'An absence has already been reported for this child on this day',
+          absence: alreadyReported,
+        });
+      }
+
       const absence = await storage.createAbsence(validatedData);
-      
+
       // Create notifications for staff/admin when absence is reported
       const staff = await storage.getStaffByDaycare(validatedData.daycareId);
       

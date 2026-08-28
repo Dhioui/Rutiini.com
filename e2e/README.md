@@ -26,6 +26,7 @@ Requires a reachable PostgreSQL (`E2E_ADMIN_URL`, default
 | `pages.mjs` | every authenticated route per role, checking what actually renders |
 | `mobile.mjs` | the same routes at phone size, looking for anything that pushes the page wider than the screen |
 | `writes.mjs` | the write actions: adding a child, logging an entry, sending a message, reporting an absence |
+| `absences.mjs` | that reporting the same day twice is refused, and that the dashboard counts absent children rather than reports |
 | `superadmin.mjs` | the super admin's own pages, and that the personal-data screens stay closed to it |
 | `reset.mjs` | password reset from the request through the emailed link to signing in again |
 | `export-check.mjs` | the four CSV report downloads, which used to answer 401 because the buttons navigated without the session |

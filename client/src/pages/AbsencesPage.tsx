@@ -77,6 +77,17 @@ export function AbsencesPage() {
         description: t('absenceCreated'),
       });
     },
+    // The server refuses a second report for a day already reported. Said in the
+    // reader's own language rather than letting the shared handler pass the API's
+    // English sentence through to a guardian.
+    onError: (error) => {
+      const alreadyReported = String(error instanceof Error ? error.message : error).startsWith('409');
+      toast({
+        title: t('error'),
+        description: alreadyReported ? t('absenceAlreadyReported') : t('serverError'),
+        variant: 'destructive',
+      });
+    },
   });
 
   const onSubmit = (values: AbsenceFormValues) => {
