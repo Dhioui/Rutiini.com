@@ -34,6 +34,21 @@ Android Studio / Xcode (natiivipaketti). Web-tiedostot eivät ole versionhallinn
 kieltäytyvät, koska ilman niitä syntyisi asennuskelpoinen sovellus jonka ruutu on
 tyhjä.
 
+### Android ilman Android Studiota
+
+CI buildaa Android-sovelluksen jokaisella pushilla ja tallentaa APK:n
+artefaktiksi (*Actions → ajo → Artifacts → `rutiini-debug-apk`*). Se on
+debug-versio: hyvä asennettavaksi puhelimeen testiä varten, ei kauppaan.
+
+Kun haluat APK:n joka puhuu omalle palvelimellesi, käynnistä ajo käsin:
+*Actions → CI → Run workflow* ja anna `api_url`-kenttään palvelimesi osoite.
+Osoite leipoutuu bundleen buildin yhteydessä, joten sitä ei voi vaihtaa
+jälkikäteen ilman uutta buildia. Vaihtoehtoisesti aseta repositorion muuttuja
+`MOBILE_API_URL`, jolloin jokainen ajo käyttää sitä.
+
+Kauppaan menevä allekirjoitettu bundle tehdään edelleen omalla koneella, koska
+se vaatii allekirjoitusavaimen jota ei säilytetä versionhallinnassa.
+
 ---
 
 ## 2. Mitä sinun pitää tehdä ennen ensimmäistä julkaisua
