@@ -221,6 +221,29 @@ jobs:
         run: ./gradlew assembleDebug --no-daemon
         working-directory: android
 
+      # The release bundle is what actually goes to Google Play, and it is not
+      # the same build as the debug APK: it runs the proguard configuration and
+      # the release manifest merge, either of which can fail on their own. Left
+      # unchecked, the first time anyone found out would be on the evening they
+      # sat down to publish.
+      #
+      # Unsigned here on purpose. app/build.gradle attaches the signing config
+      # only when keystore.properties exists, and that file holds the key that
+      # identifies the app on Play -- it belongs on the maintainer's machine,
+      # not in CI. Unsigned still proves the build itself is sound; signing is
+      # the last step and is done locally by build-android.bat.
+      - name: Build the release bundle, unsigned
+        run: ./gradlew bundleRelease --no-daemon
+        working-directory: android
+
+      - name: Report what the release bundle came to
+        run: |
+          aab=$(find android/app/build/outputs/bundle/release -name '*.aab' | head -1)
+          test -n "$aab" || { echo "::error::bundleRelease produced no .aab"; exit 1; }
+          echo "Release bundle: $aab ($(du -h "$aab" | cut -f1))"
+          echo "Unsigned -- Google Play will not accept this file. Build it"
+          echo "locally with build-android.bat to get a signed one."
+
       # The thing a person can actually install, kept from every build so a
       # regression in the native packaging is visible rather than theoretical.
       - uses: actions/upload-artifact@v4
