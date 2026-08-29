@@ -2086,20 +2086,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: 'Unauthorized' });
       }
       
-      // The same day reported twice notified the whole staff again and put another
-      // row in the day's list, so one child away read as several. Easy to do from a
-      // phone: a tap that does not look like it registered, or a form sent again on
-      // a slow connection.
-      const alreadyReported = await storage.getAbsenceForChildOnDate(
+      // The very same report arriving twice is a duplicate, not a second event.
+      //
+      // It used to add another row and notify the staff again, so one child away
+      // read as several -- easy to cause from a phone, where a tap may not look
+      // like it registered. Only an exact repeat is treated this way: a child can
+      // arrive late and also be collected early on one day, and those are two
+      // real reports that both have to survive.
+      const reportedToday = await storage.getAbsencesForChildOnDate(
         validatedData.childId,
         validatedData.date,
       );
-      if (alreadyReported) {
-        return res.status(409).json({
-          error: 'An absence has already been reported for this child on this day',
-          absence: alreadyReported,
-        });
-      }
+      const identical = reportedToday.find(
+        (a) => a.type === validatedData.type && (a.reason ?? '') === (validatedData.reason ?? ''),
+      );
+      if (identical) return res.json(identical);
 
       const absence = await storage.createAbsence(validatedData);
 

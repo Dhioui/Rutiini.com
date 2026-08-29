@@ -134,7 +134,7 @@ export interface IStorage {
   getAllAbsences(): Promise<Absence[]>;
   getAbsencesByChild(childId: number): Promise<Absence[]>;
   getAbsencesByDateRange(daycareId: number, startDate: Date, endDate: Date): Promise<Absence[]>;
-  getAbsenceForChildOnDate(childId: number, date: string): Promise<Absence | undefined>;
+  getAbsencesForChildOnDate(childId: number, date: string): Promise<Absence[]>;
   createAbsence(absence: InsertAbsence): Promise<Absence>;
   
   getMessages(userId: number, daycareId: number, limit?: number, offset?: number): Promise<Message[]>;
@@ -795,19 +795,18 @@ export class DatabaseStorage implements IStorage {
   }
 
   /**
-   * An absence already on record for this child on this day, if there is one.
+   * Everything already reported for this child on this day.
    *
-   * Reporting the same day twice is easy to do -- a tap that does not appear to
-   * register, a form submitted again on a slow connection -- and each report
-   * notified the whole staff again and put another row in the day's list.
+   * More than one is legitimate: a child can arrive late and also be collected
+   * early, and those are separate reports. What is not legitimate is the same
+   * report arriving twice, which is easy to cause from a phone -- a tap that does
+   * not look like it registered, or a form sent again on a slow connection.
    */
-  async getAbsenceForChildOnDate(childId: number, date: string): Promise<Absence | undefined> {
-    const [absence] = await db
+  async getAbsencesForChildOnDate(childId: number, date: string): Promise<Absence[]> {
+    return await db
       .select()
       .from(absences)
-      .where(and(eq(absences.childId, childId), eq(absences.date, date)))
-      .limit(1);
-    return absence;
+      .where(and(eq(absences.childId, childId), eq(absences.date, date)));
   }
 
   async createAbsence(insertAbsence: InsertAbsence): Promise<Absence> {

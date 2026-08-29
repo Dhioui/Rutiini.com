@@ -77,14 +77,13 @@ export function AbsencesPage() {
         description: t('absenceCreated'),
       });
     },
-    // The server refuses a second report for a day already reported. Said in the
-    // reader's own language rather than letting the shared handler pass the API's
-    // English sentence through to a guardian.
-    onError: (error) => {
-      const alreadyReported = String(error instanceof Error ? error.message : error).startsWith('409');
+    // Reporting a day that is already on record corrects it rather than failing,
+    // so there is no separate case here -- only the ordinary one, said in the
+    // reader's own language rather than passing the API's English through.
+    onError: () => {
       toast({
         title: t('error'),
-        description: alreadyReported ? t('absenceAlreadyReported') : t('serverError'),
+        description: t('serverError'),
         variant: 'destructive',
       });
     },

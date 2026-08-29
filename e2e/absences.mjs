@@ -49,28 +49,37 @@ const children = await (await api('/api/children', { token: guardian })).json();
 const childId = children[0].id;
 const date = new Date().toISOString().split('T')[0];
 
-const report = () =>
+const report = (type = 'sickness', reason = 'kuumetta') =>
   api('/api/absences', {
     token: guardian,
     method: 'POST',
-    body: { childId, date, type: 'sickness', reason: 'kuumetta' },
+    body: { childId, date, type, reason },
   });
 
-// 200 when this script got there first, 409 when writes.mjs already reported the
-// same child today: the database is reset per run, not per script. Either way the
-// day is now on record exactly once, which is what the rest of this checks.
 const first = await report();
-if (first.status === 200) ok('ensimmäinen poissaoloilmoitus hyväksyttiin');
-else if (first.status === 409) ok('päivä oli jo ilmoitettu aiemmassa skriptissä (409)');
-else fail(`ensimmäinen ilmoitus palautti ${first.status}, odotettiin 200 tai 409`);
+if (first.status === 200) ok('poissaoloilmoitus hyväksyttiin');
+else fail(`ilmoitus palautti ${first.status}, odotettiin 200`);
+const firstBody = first.status === 200 ? await first.json() : {};
 
-const second = await report();
-if (second.status === 409) ok('toinen ilmoitus samalle päivälle hylättiin (409)');
-else fail(`toinen ilmoitus palautti ${second.status}, odotettiin 409`);
+// A repeat of the identical report -- a double tap, or a form sent again on a
+// slow connection -- must not add a second row or notify anybody again.
+const repeat = await report();
+if (repeat.status !== 200) fail(`sama ilmoitus uudelleen palautti ${repeat.status}, odotettiin 200`);
+else {
+  const body = await repeat.json();
+  if (body.id !== firstBody.id) fail('sama ilmoitus loi uuden rivin');
+  else ok('sama ilmoitus uudelleen ei luonut toista riviä');
+}
 
-const third = await report();
-if (third.status === 409) ok('kolmas ilmoitus hylättiin myös');
-else fail(`kolmas ilmoitus palautti ${third.status}, odotettiin 409`);
+// A genuinely different report for the same day has to survive: a child can
+// arrive late and also be collected early, and both concern the staff.
+const other = await report('early_pickup', 'hammaslääkäri');
+if (other.status !== 200) fail(`toinen eri ilmoitus palautti ${other.status}, odotettiin 200`);
+else {
+  const body = await other.json();
+  if (body.id === firstBody.id) fail('eri ilmoitus korvasi aiemman rivin');
+  else ok('eri ilmoitus samalle päivälle tallentui omana rivinään');
+}
 
 const stats = await (await api('/api/daycare/stats', { token: leader })).json();
 console.log(`  lapsia ${stats.childrenCount}, poissa ${stats.absencesToday}, läsnäolo ${stats.attendanceRate}%`);

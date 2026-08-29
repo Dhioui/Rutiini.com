@@ -198,7 +198,6 @@ const resources = {
       reportedBy: 'Reported by',
       noAbsences: 'No absences reported',
       absenceCreated: 'Absence reported successfully',
-      absenceAlreadyReported: 'An absence has already been reported for this child on this day',
       selectAbsenceType: 'Select absence type',
       
       // Messages
@@ -918,7 +917,6 @@ const resources = {
       reportedBy: 'Ilmoittaja',
       noAbsences: 'Ei poissaoloja',
       absenceCreated: 'Poissaolo ilmoitettu onnistuneesti',
-      absenceAlreadyReported: 'Tälle lapselle on jo ilmoitettu poissaolo tälle päivälle',
       selectAbsenceType: 'Valitse poissaolon tyyppi',
       
       // Messages
@@ -1609,7 +1607,6 @@ const resources = {
       reportedBy: 'Anmäld av',
       noAbsences: 'Ingen frånvaro rapporterad',
       absenceCreated: 'Frånvaro anmäld',
-      absenceAlreadyReported: 'En frånvaro har redan anmälts för det här barnet den här dagen',
       selectAbsenceType: 'Välj typ av frånvaro',
       
       // Messages
@@ -2327,7 +2324,6 @@ const resources = {
       reportedBy: 'أبلغ عنه',
       noAbsences: 'لم يتم الإبلاغ عن غياب',
       absenceCreated: 'تم الإبلاغ عن الغياب بنجاح',
-      absenceAlreadyReported: 'تم الإبلاغ بالفعل عن غياب لهذا الطفل في هذا اليوم',
       selectAbsenceType: 'اختر نوع الغياب',
       
       // Messages
@@ -3045,7 +3041,6 @@ const resources = {
       reportedBy: 'Сообщил',
       noAbsences: 'Отсутствий не зафиксировано',
       absenceCreated: 'Отсутствие успешно зарегистрировано',
-      absenceAlreadyReported: 'Отсутствие для этого ребёнка на этот день уже зарегистрировано',
       selectAbsenceType: 'Выберите тип отсутствия',
       
       // Messages
@@ -3763,7 +3758,6 @@ const resources = {
       reportedBy: 'La Shegeyey',
       noAbsences: 'Liidata la\'an',
       absenceCreated: 'Liidata waa la sheegay',
-      absenceAlreadyReported: 'Maqnaanshaha ilmahan maalintan horey ayaa loo sheegay',
       selectAbsenceType: 'Nooca liidata dooro',
       
       // Messages
