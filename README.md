@@ -144,6 +144,43 @@ Every variable is documented in [`.env.example`](.env.example). Only
   and daily entries are kept before the nightly job deletes them. Set these to
   match the retention period agreed in the data processing agreement.
 
+### Secrets
+
+Four of these are credentials and the rest are not. Treat only these four as
+secret: `JWT_SECRET`, `POSTGRES_PASSWORD`, `SMTP_PASSWORD` and
+`FCM_SERVICE_ACCOUNT`. `DATABASE_URL` counts too, because the password is inside
+it.
+
+Generate the random ones rather than inventing them. Node is already a
+dependency, so this works the same on Windows, macOS and Linux:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+```
+
+They live in a `.env` file on the server, which `.gitignore` already excludes.
+Never commit one, and never paste a secret into a chat, an issue or a commit
+message — anything that reaches a remote is best treated as public from then on.
+
+**Nothing in the mobile app is secret.** Variables beginning with `VITE_` are
+compiled into the JavaScript bundle, and anyone can unzip an APK and read them.
+The app uses exactly one, `VITE_API_URL`, which is a public address and fine.
+Never add a second one for anything you would not print on the front page. In
+particular the Firebase service account belongs on the server as
+`FCM_SERVICE_ACCOUNT`, never in the app: the app is only ever a *recipient* of
+notifications, and only the server sends them.
+
+The Android signing password is separate from all of this. It is not an
+environment variable and does not belong on the server — it lives in
+`android/keystore.properties` on the machine that builds releases, and its
+backup belongs somewhere offline. Losing it ends the ability to update the app
+on Google Play.
+
+If one leaks: rotate it, then deal with what it protected. A leaked `JWT_SECRET`
+means every existing session token stays valid until you change it — changing it
+invalidates them all, which is the point. A leaked database password needs the
+password changed *and* a look at whether anything was read.
+
 ## Data protection
 
 - **Tenant isolation.** Every query is scoped by `daycareId`. Staff see only their
