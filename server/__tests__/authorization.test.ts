@@ -17,6 +17,7 @@ import {
   canViewAuditLogs,
   canManageForms,
   canSubmitForms,
+  canCreateRole,
 } from '../auth';
 
 // Create mock users for testing
@@ -416,5 +417,52 @@ describe('Role Hierarchy Verification (Production)', () => {
     expect(canExportData(guardian)).toBe(false);
     expect(canViewAuditLogs(guardian)).toBe(false);
     expect(canSubmitForms(guardian)).toBe(true);
+  });
+});
+
+/**
+ * Which roles a user may hand out when creating another account.
+ *
+ * The account creation route let any caller who was allowed to create users at
+ * all choose the new account's role freely, and staff were allowed to create
+ * users. So a member of staff could create a daycareleader, pick its password,
+ * and sign back in holding every permission staff is deliberately denied --
+ * deleting children, exporting the whole roster, reading the audit log. The
+ * daycare boundary held, but the role boundary inside it did not.
+ */
+describe('Role Escalation: which roles a caller may create', () => {
+  it('does not let staff create a daycare leader', () => {
+    const staff = createMockUser('staff', 1);
+    expect(canCreateRole(staff, 'daycareleader')).toBe(false);
+  });
+
+  it('does not let staff create more staff', () => {
+    const staff = createMockUser('staff', 1);
+    expect(canCreateRole(staff, 'staff')).toBe(false);
+  });
+
+  it('lets staff create guardians, which is their daily work', () => {
+    const staff = createMockUser('staff', 1);
+    expect(canCreateRole(staff, 'guardian')).toBe(true);
+  });
+
+  it('lets a daycare leader create any role inside their daycare', () => {
+    const leader = createMockUser('daycareleader', 1);
+    expect(canCreateRole(leader, 'daycareleader')).toBe(true);
+    expect(canCreateRole(leader, 'staff')).toBe(true);
+    expect(canCreateRole(leader, 'guardian')).toBe(true);
+  });
+
+  it('never lets anyone create a super admin', () => {
+    for (const role of ['daycareleader', 'staff', 'guardian', 'super_admin']) {
+      expect(canCreateRole(createMockUser(role, 1), 'super_admin' as any)).toBe(false);
+    }
+  });
+
+  it('does not let a guardian create accounts at all', () => {
+    const guardian = createMockUser('guardian', 1);
+    for (const role of ['daycareleader', 'staff', 'guardian'] as const) {
+      expect(canCreateRole(guardian, role)).toBe(false);
+    }
   });
 });

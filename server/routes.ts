@@ -13,6 +13,7 @@ import type { User, Child, MealMenu } from "@shared/schema";
 import { getTodaysMenu, fetchAndSaveMenu, fetchAndSaveMenuForDaycare, dietInfoLegend } from "./menuScraper";
 import {
   canAccessDaycare,
+  canCreateRole,
   hasRole,
   canViewPersonalData,
   canViewChildren,
@@ -1209,7 +1210,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...req.body,
         daycareId: user.daycareId,
       });
-      
+
+      // Creating accounts and choosing their role are separate permissions: staff
+      // add guardians, but must not be able to mint themselves a daycare leader.
+      if (!canCreateRole(user, validatedData.role)) {
+        await logAudit(user.id, user.role, user.daycareId, 'ACCESS_DENIED', 'user', undefined, {
+          attemptedRole: validatedData.role,
+        });
+        return res.status(403).json({ error: 'You cannot create an account with that role' });
+      }
+
       const existingUser = await storage.getUserByEmail(validatedData.email);
       if (existingUser) {
         return res.status(400).json({ error: 'Email already in use' });

@@ -121,6 +121,26 @@ export function canManageUsers(user: User): boolean {
 }
 
 /**
+ * Which role a caller may give to an account they create.
+ *
+ * Being allowed to create accounts is not the same as being allowed to create
+ * any account. Staff add guardians as children enrol, which is ordinary daily
+ * work; letting them also mint a daycare leader would hand them, in one request,
+ * every permission staff is deliberately denied -- removing children, exporting
+ * the roster, reading the audit log -- since they choose the new password too.
+ *
+ * Super admin is never creatable here. It is provisioned separately and is the
+ * one role that reaches across daycares.
+ */
+export function canCreateRole(user: User, role: UserRole): boolean {
+  if (role === 'super_admin') return false;
+
+  if (['admin', 'daycareleader'].includes(user.role)) return true;
+  if (user.role === 'staff') return role === 'guardian';
+  return false;
+}
+
+/**
  * CSV export - only daycareleader (GDPR data controller)
  */
 export function canExportData(user: User): boolean {

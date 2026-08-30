@@ -156,7 +156,9 @@ export function UsersPage() {
       name: "",
       email: "",
       password: "",
-      role: "staff",
+      // Staff may only create guardians, so that is the only default that is
+      // actually selectable for them.
+      role: currentUser?.role === "daycareleader" ? "staff" : "guardian",
     },
   });
 
@@ -269,9 +271,16 @@ export function UsersPage() {
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          <SelectItem value="staff" data-testid="option-staff">
-                            {t("staff")}
-                          </SelectItem>
+                          {/* A staff account can read every child in the daycare, so
+                              handing one out is a decision about who works here --
+                              the leader's, not a colleague's. The server enforces
+                              this; the option is hidden so nobody meets a refusal
+                              they could not have predicted. */}
+                          {currentUser?.role === "daycareleader" && (
+                            <SelectItem value="staff" data-testid="option-staff">
+                              {t("staff")}
+                            </SelectItem>
+                          )}
                           <SelectItem value="guardian" data-testid="option-guardian">
                             {t("guardian")}
                           </SelectItem>
