@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Plus, Baby, Trash2 } from 'lucide-react';
+import { Plus, Baby, Trash2, Pencil, AlertTriangle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useLocation } from 'wouter';
 import type { Child, Entry } from '@shared/schema';
@@ -25,13 +25,24 @@ export function ChildrenPage() {
   const [name, setName] = useState('');
   const [birthdate, setBirthdate] = useState('');
   const [groupId, setGroupId] = useState('');
+  const [allergies, setAllergies] = useState('');
+  const [diet, setDiet] = useState('');
+  // Care details are edited separately from the rest of a child's record, because
+  // staff may change these two and nothing else.
+  const [editing, setEditing] = useState<Child | null>(null);
 
   const { data: children, isLoading } = useQuery<Child[]>({
     queryKey: ['/api/children'],
   });
 
   const addChildMutation = useMutation({
-    mutationFn: async (data: { name: string; birthdate: string; groupId: number | null }) => {
+    mutationFn: async (data: {
+      name: string;
+      birthdate: string;
+      groupId: number | null;
+      allergies: string;
+      diet: string;
+    }) => {
       return await apiRequest('POST', '/api/children', data);
     },
     onSuccess: () => {
@@ -40,9 +51,32 @@ export function ChildrenPage() {
       setName('');
       setBirthdate('');
       setGroupId('');
+      setAllergies('');
+      setDiet('');
       toast({
         title: t('success'),
         description: t('childAdded'),
+      });
+    },
+  });
+
+  const updateCareMutation = useMutation({
+    mutationFn: async ({ id, ...care }: { id: number; allergies: string; diet: string }) => {
+      return await apiRequest('PATCH', `/api/children/${id}`, care);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/children'] });
+      setEditing(null);
+      toast({
+        title: t('success'),
+        description: t('careDetailsSaved'),
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: t('error'),
+        description: error.message || t('failedToSaveCareDetails'),
+        variant: 'destructive',
       });
     },
   });
@@ -73,6 +107,8 @@ export function ChildrenPage() {
       name,
       birthdate,
       groupId: groupId ? parseInt(groupId) : null,
+      allergies,
+      diet,
     });
   };
 
@@ -101,6 +137,9 @@ export function ChildrenPage() {
   // save, and offering it to a super admin contradicts the rule that they never
   // touch personal data.
   const canAddChildren = user?.role === 'daycareleader';
+  // Staff record allergies too -- a guardian mentions one at the door, and waiting
+  // for the leader is how it ends up not written down at all.
+  const canEditCare = user?.role === 'daycareleader' || user?.role === 'staff';
 
   return (
     <div className="space-y-6">
@@ -161,6 +200,29 @@ export function ChildrenPage() {
                     data-testid="input-child-group"
                   />
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor="allergies">{t('allergies')}</Label>
+                  <Input
+                    id="allergies"
+                    value={allergies}
+                    onChange={(e) => setAllergies(e.target.value)}
+                    placeholder={t('allergiesPlaceholder')}
+                    maxLength={500}
+                    data-testid="input-child-allergies"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="diet">{t('diet')}</Label>
+                  <Input
+                    id="diet"
+                    value={diet}
+                    onChange={(e) => setDiet(e.target.value)}
+                    placeholder={t('dietPlaceholder')}
+                    maxLength={500}
+                    data-testid="input-child-diet"
+                  />
+                  <p className="text-xs text-muted-foreground">{t('dietHint')}</p>
+                </div>
                 <Button
                   type="submit"
                   className="w-full"
@@ -214,6 +276,25 @@ export function ChildrenPage() {
                 </div>
               </CardHeader>
               <CardContent>
+                {(child.allergies || child.diet) && (
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {child.allergies && (
+                      <Badge
+                        variant="destructive"
+                        className="gap-1"
+                        data-testid={`badge-child-allergies-${child.id}`}
+                      >
+                        <AlertTriangle className="h-3 w-3 shrink-0" />
+                        {child.allergies}
+                      </Badge>
+                    )}
+                    {child.diet && (
+                      <Badge variant="outline" data-testid={`badge-child-diet-${child.id}`}>
+                        {child.diet}
+                      </Badge>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-2">
                   {child.groupId && (
                     <Badge variant="secondary" data-testid={`badge-child-group-${child.id}`}>
@@ -224,6 +305,20 @@ export function ChildrenPage() {
                     <Button variant="ghost" size="sm" data-testid={`button-view-child-${child.id}`}>
                       {t('viewDetails')}
                     </Button>
+                    {canEditCare && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={t('editCareDetails')}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditing(child);
+                        }}
+                        data-testid={`button-edit-care-${child.id}`}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    )}
                     {canAddChildren && (
                       <Button
                         variant="ghost"
@@ -260,6 +355,61 @@ export function ChildrenPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Keyed on the child so the inputs re-seed when a different card is opened. */}
+      <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
+        <DialogContent key={editing?.id}>
+          <DialogHeader>
+            <DialogTitle>{t('editCareDetails')}</DialogTitle>
+            <DialogDescription>{editing?.name}</DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!editing) return;
+              const form = new FormData(e.currentTarget);
+              updateCareMutation.mutate({
+                id: editing.id,
+                allergies: String(form.get('allergies') ?? ''),
+                diet: String(form.get('diet') ?? ''),
+              });
+            }}
+            className="space-y-4"
+          >
+            <div className="space-y-2">
+              <Label htmlFor="edit-allergies">{t('allergies')}</Label>
+              <Input
+                id="edit-allergies"
+                name="allergies"
+                defaultValue={editing?.allergies ?? ''}
+                placeholder={t('allergiesPlaceholder')}
+                maxLength={500}
+                data-testid="input-edit-allergies"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-diet">{t('diet')}</Label>
+              <Input
+                id="edit-diet"
+                name="diet"
+                defaultValue={editing?.diet ?? ''}
+                placeholder={t('dietPlaceholder')}
+                maxLength={500}
+                data-testid="input-edit-diet"
+              />
+              <p className="text-xs text-muted-foreground">{t('dietHint')}</p>
+            </div>
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={updateCareMutation.isPending}
+              data-testid="button-save-care"
+            >
+              {updateCareMutation.isPending ? t('loading') : t('save')}
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

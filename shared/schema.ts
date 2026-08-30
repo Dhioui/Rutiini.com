@@ -110,6 +110,15 @@ export const children = pgTable("children", {
   birthdate: date("birthdate").notNull(),
   groupId: integer("group_id"),
   daycareId: integer("daycare_id").notNull().references(() => daycares.id),
+  // Two fields rather than one, because staff read them for different reasons.
+  // An allergy is a safety fact -- a reaction can be an emergency -- and is shown
+  // with warning styling wherever the child appears. A diet is a menu choice and
+  // is not urgent. Kept together, the dangerous line gets read past.
+  allergies: text("allergies"),
+  // Records what must not be served, never why. "Ei sianlihaa" is the fact the
+  // kitchen needs; "muslimi" would be a religious belief, which is special
+  // category data under GDPR Article 9 and is not needed to plate a meal.
+  diet: text("diet"),
 }, (table) => [
   index("children_daycare_id_idx").on(table.daycareId),
   index("children_group_id_idx").on(table.groupId),
@@ -587,11 +596,40 @@ export const superAdminLoginSchema = z.object({
   password: z.string().min(8),
 });
 
+/**
+ * Empty and whitespace-only both mean "nothing recorded", so they store as null.
+ *
+ * An absent key stays `undefined` rather than becoming `null`. A partial update
+ * sends only the fields it changes, and collapsing absent to null here would let
+ * a rename silently erase a child's allergies.
+ */
+const careNote = z
+  .string()
+  .max(500)
+  .nullable()
+  .optional()
+  .transform((s) => (s === undefined ? undefined : s?.trim() || null));
+
 export const insertChildSchema = z.object({
   name: z.string().min(1),
   birthdate: z.string(),
   groupId: z.number().int().positive().nullable().optional(),
   daycareId: z.number().int().positive(),
+  allergies: careNote,
+  diet: careNote,
+});
+
+/**
+ * Editing a child. `daycareId` is deliberately absent: moving a child between
+ * daycares would carry their entries across a tenant boundary, and tenant
+ * isolation is the one thing this application must not let a request decide.
+ */
+export const updateChildSchema = z.object({
+  name: z.string().min(1).optional(),
+  birthdate: z.string().optional(),
+  groupId: z.number().int().positive().nullable().optional(),
+  allergies: careNote,
+  diet: careNote,
 });
 
 export const insertEntrySchema = z.object({
@@ -817,6 +855,7 @@ export type LoginRequest = z.infer<typeof loginSchema>;
 export type SuperAdminLoginRequest = z.infer<typeof superAdminLoginSchema>;
 export type Child = typeof children.$inferSelect;
 export type InsertChild = z.infer<typeof insertChildSchema>;
+export type UpdateChild = z.infer<typeof updateChildSchema>;
 export type Entry = typeof entries.$inferSelect;
 export type InsertEntry = z.infer<typeof insertEntrySchema>;
 export type Trip = typeof trips.$inferSelect;

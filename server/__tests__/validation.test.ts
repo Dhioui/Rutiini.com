@@ -16,6 +16,7 @@ import {
   insertFormSchema,
   insertFormSubmissionSchema,
   insertChildConsentSchema,
+  updateChildSchema,
 } from '@shared/schema';
 
 describe('Login Schema Validation (Production)', () => {
@@ -512,5 +513,65 @@ describe('Child Consent Schema (Production)', () => {
       const result = insertChildConsentSchema.safeParse(validData);
       expect(result.success).toBe(true);
     }
+  });
+});
+
+/**
+ * Allergies and diet.
+ *
+ * The behaviour worth pinning down is what happens to a field that is NOT sent.
+ * A partial update -- a rename, a group change -- must leave allergies alone; if
+ * an absent key collapsed to null, renaming a child would erase a safety fact
+ * nobody would notice was gone until it mattered.
+ */
+describe('Child care fields', () => {
+  it('leaves an unsent field undefined rather than nulling it', () => {
+    const result = updateChildSchema.parse({ name: 'Aino' });
+
+    expect(result.allergies).toBeUndefined();
+    expect(result.diet).toBeUndefined();
+    expect('allergies' in result && result.allergies !== undefined).toBe(false);
+  });
+
+  it('treats an explicit null as "clear this"', () => {
+    const result = updateChildSchema.parse({ allergies: null });
+    expect(result.allergies).toBeNull();
+  });
+
+  it('stores blank and whitespace-only as null, not as an empty string', () => {
+    expect(updateChildSchema.parse({ allergies: '' }).allergies).toBeNull();
+    expect(updateChildSchema.parse({ allergies: '   ' }).allergies).toBeNull();
+    expect(updateChildSchema.parse({ diet: '\t\n ' }).diet).toBeNull();
+  });
+
+  it('trims surrounding whitespace but keeps the text', () => {
+    expect(updateChildSchema.parse({ allergies: '  pähkinä  ' }).allergies).toBe('pähkinä');
+    expect(updateChildSchema.parse({ diet: ' ei sianlihaa ' }).diet).toBe('ei sianlihaa');
+  });
+
+  it('accepts the fields when a child is created', () => {
+    const result = insertChildSchema.safeParse({
+      name: 'Onni',
+      birthdate: '2021-03-04',
+      daycareId: 1,
+      allergies: 'pähkinä, kananmuna',
+      diet: 'ei sianlihaa',
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.allergies).toBe('pähkinä, kananmuna');
+      expect(result.data.diet).toBe('ei sianlihaa');
+    }
+  });
+
+  it('rejects a note long enough to be a document rather than a note', () => {
+    const result = updateChildSchema.safeParse({ allergies: 'a'.repeat(501) });
+    expect(result.success).toBe(false);
+  });
+
+  it('does not let an update move a child to another daycare', () => {
+    const result = updateChildSchema.parse({ name: 'Aino', daycareId: 999 } as any);
+    expect((result as Record<string, unknown>).daycareId).toBeUndefined();
   });
 });

@@ -29,6 +29,7 @@ import {
   type InsertUser,
   type Child,
   type InsertChild,
+  type UpdateChild,
   type Entry,
   type InsertEntry,
   type Trip,
@@ -106,6 +107,7 @@ export interface IStorage {
   getChildrenByGuardian(guardianId: number): Promise<Child[]>;
   getChild(id: number): Promise<Child | undefined>;
   createChild(child: InsertChild): Promise<Child>;
+  updateChild(id: number, daycareId: number, update: UpdateChild): Promise<Child | undefined>;
   deleteChild(id: number): Promise<void>;
   deleteGuardianRelation(userId: number, childId: number): Promise<void>;
   deleteGuardiansByUserId(userId: number): Promise<void>;
@@ -605,6 +607,25 @@ export class DatabaseStorage implements IStorage {
       .values(insertChild)
       .returning();
     return child;
+  }
+
+  /**
+   * Scoped by daycare as well as id, so a caller cannot edit a child in another
+   * tenant by guessing an id. Returns undefined when nothing matched, which the
+   * route reports as 404 rather than distinguishing "absent" from "not yours".
+   */
+  async updateChild(id: number, daycareId: number, update: UpdateChild): Promise<Child | undefined> {
+    const fields = Object.fromEntries(
+      Object.entries(update).filter(([, value]) => value !== undefined),
+    );
+    if (Object.keys(fields).length === 0) return this.getChild(id);
+
+    const [child] = await db
+      .update(children)
+      .set(fields)
+      .where(and(eq(children.id, id), eq(children.daycareId, daycareId)))
+      .returning();
+    return child || undefined;
   }
 
   async deleteChild(id: number): Promise<void> {

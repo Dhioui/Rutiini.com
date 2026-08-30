@@ -8,7 +8,7 @@ import { getCached, setCache, invalidateCache } from "./db";
 import { csvFile } from "./csv";
 import fs from "fs";
 import path from "path";
-import { loginSchema, superAdminLoginSchema, insertChildSchema, insertEntrySchema, insertTripSchema, insertTripResponseSchema, createUserSchema, insertDaycareSchema, insertAbsenceSchema, insertMessageSchema, insertDocumentSchema, insertDaycareGroupSchema, changePasswordSchema, insertFormSchema, insertFormSubmissionSchema, insertChildConsentSchema, insertMunicipalitySchema, updateMunicipalitySchema } from "@shared/schema";
+import { loginSchema, superAdminLoginSchema, insertChildSchema, updateChildSchema, insertEntrySchema, insertTripSchema, insertTripResponseSchema, createUserSchema, insertDaycareSchema, insertAbsenceSchema, insertMessageSchema, insertDocumentSchema, insertDaycareGroupSchema, changePasswordSchema, insertFormSchema, insertFormSubmissionSchema, insertChildConsentSchema, insertMunicipalitySchema, updateMunicipalitySchema } from "@shared/schema";
 import type { User, Child, MealMenu } from "@shared/schema";
 import { getTodaysMenu, fetchAndSaveMenu, fetchAndSaveMenuForDaycare, dietInfoLegend } from "./menuScraper";
 import {
@@ -743,6 +743,61 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const child = await storage.createChild(validatedData);
       
       await logAudit(user.id, user.role, user.daycareId, 'CREATE', 'child', child.id);
+      res.json(child);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  /**
+   * Editing a child.
+   *
+   * Permission is split by field rather than by route. Name, birthdate and group
+   * are administrative -- group especially, since setting it directly would bypass
+   * the group assignment system -- so they stay with the daycare leader, matching
+   * who may create and remove a child.
+   *
+   * Allergies and diet are different. A guardian mentions a new allergy to whoever
+   * is at the door, and that is staff. Requiring the leader to record it means it
+   * is recorded late or not at all, and this is the one field where late is unsafe.
+   * So staff may write those two and nothing else.
+   */
+  const CARE_FIELDS = ['allergies', 'diet'] as const;
+
+  app.patch('/api/children/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      const childId = parseInt(req.params.id);
+      if (Number.isNaN(childId)) return res.status(400).json({ error: 'Invalid request' });
+
+      // GDPR: Super admin cannot touch personal data.
+      if (user.role === 'super_admin') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'children');
+        return res.status(403).json({ error: GDPR_DENIAL_MESSAGE });
+      }
+
+      if (user.role !== 'daycareleader' && user.role !== 'staff') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
+
+      const validatedData = updateChildSchema.parse(req.body);
+
+      if (user.role === 'staff') {
+        const administrative = Object.keys(validatedData).filter(
+          (field) => !(CARE_FIELDS as readonly string[]).includes(field),
+        );
+        if (administrative.length > 0) {
+          return res
+            .status(403)
+            .json({ error: 'Staff can only update allergies and diet' });
+        }
+      }
+
+      const child = await storage.updateChild(childId, user.daycareId, validatedData);
+      if (!child) return res.status(404).json({ error: 'Child not found' });
+
+      await logAudit(user.id, user.role, user.daycareId, 'UPDATE', 'child', child.id);
       res.json(child);
     } catch (error) {
       res.status(400).json({ error: 'Invalid request' });
@@ -1787,14 +1842,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       const children = await storage.getChildren(user.daycareId);
       
-      const headers = ['ID', 'Nimi', 'Syntymäaika', 'Ryhmä'];
+      const headers = ['ID', 'Nimi', 'Syntymäaika', 'Ryhmä', 'Allergiat', 'Ruokavalio'];
       const rows = await Promise.all(children.map(async (child) => {
         const group = child.groupId ? await storage.getGroupById(child.groupId) : null;
         return [
           child.id,
           child.name,
           child.birthdate ? new Date(child.birthdate).toLocaleDateString('fi-FI') : '',
-          group?.name || ''
+          group?.name || '',
+          child.allergies || '',
+          child.diet || ''
         ];
       }));
       
