@@ -228,6 +228,10 @@ toolchain.
 
 ## Project layout
 
+[TILANNE.md](TILANNE.md) is the overview in Finnish: what the application is for,
+what it does, **what it deliberately does not do**, and where the project stands.
+Read that before promising anything to anyone.
+
 [PROJEKTIN_RAKENNE.md](PROJEKTIN_RAKENNE.md) maps the whole repository in
 Finnish: what each folder and file is for, what each role sees, and where to look
 when something breaks. Start there if you are new to the codebase.

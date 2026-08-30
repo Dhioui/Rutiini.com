@@ -183,6 +183,7 @@ aina sivu → `routes.ts` → `storage.ts` → `shared/schema.ts`.
 
 | Tiedosto | Mihin |
 |---|---|
+| `TILANNE.md` | **Mihin sovellus on, missä tilassa se on, ja mitä se ei tee** |
 | `README.md` | Asennus, ajo, ympäristömuuttujat, tietosuoja |
 | `MOBILE_RELEASE.md` | **Puhelinsovellusten buildaus ja julkaisu** |
 | `iOS_BUILD_GUIDE.md` | Xcoden vaiheet (vaatii Macin) |
