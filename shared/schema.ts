@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, date, boolean, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, date, boolean, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -24,6 +24,14 @@ export const daycares = pgTable("daycares", {
   municipality: text("municipality"), // Legacy field for backwards compatibility
   menuSourceType: text("menu_source_type").notNull().default('none'), // 'aromi', 'manual', 'none' - overrides municipality default
   menuSourceUrl: text("menu_source_url"), // For aromi: the specific school/daycare URL
+  // Care-time reservations are off unless a daycare turns them on, so an existing
+  // installation behaves exactly as before after this migration.
+  reservationsEnabled: boolean("reservations_enabled").notNull().default(false),
+  // A reservation for some date locks this many days before the Monday of that
+  // date's week, at reservationLockTime. The default -- one day, 23:59 -- is the
+  // Sunday evening before the week, which is the common Finnish arrangement.
+  reservationLockDaysBefore: integer("reservation_lock_days_before").notNull().default(1),
+  reservationLockTime: text("reservation_lock_time").notNull().default('23:59'),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => [
   index("daycares_municipality_id_idx").on(table.municipalityId),
@@ -838,6 +846,145 @@ export const insertPushTokenSchema = z.object({
   platform: z.string().min(1),
 });
 
+// ===== CARE TIME: contracts, reservations, realised attendance =====
+//
+// Four tables, kept apart because they answer different questions and are written
+// by different people. A contract is what was agreed; a reservation is what the
+// guardian asked for; a record is what actually happened. Billing is later built
+// on the difference between the last two, measured against the first.
+
+/**
+ * The agreed monthly hour allowance for one child.
+ *
+ * Held as rows with a validity range rather than a column on the child, because a
+ * contract changes and last month's summary must not change with it. A month is
+ * summarised against the contract that was in force during that month.
+ */
+export const childContracts = pgTable("child_contracts", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  childId: integer("child_id").notNull().references(() => children.id),
+  daycareId: integer("daycare_id").notNull().references(() => daycares.id),
+  monthlyHours: integer("monthly_hours").notNull(),
+  validFrom: date("valid_from").notNull(),
+  validTo: date("valid_to"), // null = still in force
+  createdById: integer("created_by_id").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("child_contracts_daycare_id_idx").on(table.daycareId),
+  index("child_contracts_child_id_valid_from_idx").on(table.childId, table.validFrom),
+]);
+
+/**
+ * A guardian's recurring weekly pattern, applied to generate reservations.
+ *
+ * Stored per weekday so a week can be partial: a child booked Monday to Wednesday
+ * has three rows and no others.
+ */
+export const reservationTemplates = pgTable("reservation_templates", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  childId: integer("child_id").notNull().references(() => children.id),
+  daycareId: integer("daycare_id").notNull().references(() => daycares.id),
+  weekday: integer("weekday").notNull(), // 1 = Monday ... 7 = Sunday, ISO-8601
+  startTime: text("start_time").notNull(), // 'HH:MM'
+  endTime: text("end_time").notNull(),
+  createdById: integer("created_by_id").notNull().references(() => users.id),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("reservation_templates_child_weekday_idx").on(table.childId, table.weekday),
+  index("reservation_templates_daycare_id_idx").on(table.daycareId),
+]);
+
+/** One booked day. At most one per child per date, so re-booking replaces. */
+export const attendanceReservations = pgTable("attendance_reservations", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  childId: integer("child_id").notNull().references(() => children.id),
+  daycareId: integer("daycare_id").notNull().references(() => daycares.id),
+  date: date("date").notNull(),
+  startTime: text("start_time").notNull(), // 'HH:MM'
+  endTime: text("end_time").notNull(),
+  createdById: integer("created_by_id").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("attendance_reservations_child_date_idx").on(table.childId, table.date),
+  index("attendance_reservations_daycare_id_date_idx").on(table.daycareId, table.date),
+  index("attendance_reservations_created_at_idx").on(table.createdAt),
+]);
+
+/**
+ * A realised stay, written by staff at the door.
+ *
+ * Several rows per child per day are allowed and expected: a child who leaves for
+ * therapy and returns has two. The day's realised time is the sum of the closed
+ * pairs; a row whose checkOutAt is null is a child still present.
+ */
+export const attendanceRecords = pgTable("attendance_records", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  childId: integer("child_id").notNull().references(() => children.id),
+  daycareId: integer("daycare_id").notNull().references(() => daycares.id),
+  date: date("date").notNull(),
+  checkInAt: timestamp("check_in_at").notNull(),
+  checkOutAt: timestamp("check_out_at"), // null = still present
+  checkedInById: integer("checked_in_by_id").notNull().references(() => users.id),
+  checkedOutById: integer("checked_out_by_id").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("attendance_records_daycare_id_date_idx").on(table.daycareId, table.date),
+  index("attendance_records_child_id_date_idx").on(table.childId, table.date),
+  index("attendance_records_created_at_idx").on(table.createdAt),
+]);
+
+/** 'HH:MM', 24-hour. Rejects 24:00 and 7:5 so comparisons stay string-safe. */
+const clockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Time must be HH:MM');
+
+/** End after start, compared as strings, which HH:MM makes safe. */
+const timeRange = <T extends z.ZodRawShape>(shape: T) =>
+  z.object(shape).refine(
+    (v: any) => v.endTime > v.startTime,
+    { message: 'End time must be after start time', path: ['endTime'] },
+  );
+
+export const insertChildContractSchema = z.object({
+  childId: z.number().int().positive(),
+  monthlyHours: z.number().int().positive().max(1000),
+  validFrom: z.string(),
+  validTo: z.string().nullable().optional(),
+});
+
+export const insertReservationSchema = timeRange({
+  childId: z.number().int().positive(),
+  date: z.string(),
+  startTime: clockTime,
+  endTime: clockTime,
+});
+
+export const reservationTemplateSchema = z.object({
+  childId: z.number().int().positive(),
+  days: z.array(
+    timeRange({
+      weekday: z.number().int().min(1).max(7),
+      startTime: clockTime,
+      endTime: clockTime,
+    }),
+  ).max(7),
+});
+
+export const applyTemplateSchema = z.object({
+  childId: z.number().int().positive(),
+  from: z.string(),
+  to: z.string(),
+});
+
+export const checkInSchema = z.object({
+  childId: z.number().int().positive(),
+  at: z.string().datetime().optional(), // defaults to now; present for correcting a missed tap
+});
+
+export const checkOutSchema = z.object({
+  childId: z.number().int().positive(),
+  at: z.string().datetime().optional(),
+});
+
 export const resetPasswordSchema = z.object({
   token: z.string().min(1),
   newPassword: z.string().regex(strongPasswordRegex, strongPasswordMessage),
@@ -904,3 +1051,10 @@ export type InsertPushToken = z.infer<typeof insertPushTokenSchema>;
 // GDPR Delete Request types
 export type DeleteRequest = typeof deleteRequests.$inferSelect;
 export type InsertDeleteRequest = z.infer<typeof insertDeleteRequestSchema>;
+
+export type ChildContract = typeof childContracts.$inferSelect;
+export type InsertChildContract = z.infer<typeof insertChildContractSchema>;
+export type ReservationTemplate = typeof reservationTemplates.$inferSelect;
+export type AttendanceReservation = typeof attendanceReservations.$inferSelect;
+export type InsertReservation = z.infer<typeof insertReservationSchema>;
+export type AttendanceRecord = typeof attendanceRecords.$inferSelect;

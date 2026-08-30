@@ -19,7 +19,8 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { LayoutDashboard, Users, ClipboardList, FileText, Settings, Baby, Building2, Calendar, MessageSquare, BarChart3, ShieldCheck, ScrollText, UtensilsCrossed, ClipboardCheck, Shield, Trash2, ChevronRight, Globe } from 'lucide-react';
+import { LayoutDashboard, Users, ClipboardList, FileText, Settings, Baby, Building2, Calendar, MessageSquare, BarChart3, ShieldCheck, ScrollText, UtensilsCrossed, ClipboardCheck, Shield, Trash2, ChevronRight, Globe, CalendarClock, DoorOpen } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 
 type MenuItem = {
@@ -41,6 +42,14 @@ export function AppSidebar() {
   const { setOpenMobile, isMobile, state } = useSidebar();
 
   const isCollapsed = state === 'collapsed';
+
+  const { data: careTime } = useQuery<{ enabled: boolean }>({
+    queryKey: ['/api/care-time/enabled'],
+    enabled: Boolean(user) && user?.role !== 'super_admin',
+  });
+  const careTimeEnabled = careTime?.enabled === true;
+
+  const careTimeUrls = ['/care-time', '/attendance'];
 
   const getMenuGroups = (): MenuGroup[] => {
     if (!user) return [];
@@ -85,6 +94,8 @@ export function AppSidebar() {
             defaultOpen: true,
             items: [
               { title: t('absences'), url: '/absences', icon: Calendar },
+              { title: t('careTime'), url: '/care-time', icon: CalendarClock },
+              { title: t('attendance'), url: '/attendance', icon: DoorOpen },
               { title: t('forms'), url: '/forms', icon: ClipboardCheck },
               { title: t('messages'), url: '/messages', icon: MessageSquare },
             ],
@@ -117,6 +128,8 @@ export function AppSidebar() {
             defaultOpen: true,
             items: [
               { title: t('absences'), url: '/absences', icon: Calendar },
+              { title: t('careTime'), url: '/care-time', icon: CalendarClock },
+              { title: t('attendance'), url: '/attendance', icon: DoorOpen },
               { title: t('forms'), url: '/forms', icon: ClipboardCheck },
               { title: t('messages'), url: '/messages', icon: MessageSquare },
             ],
@@ -146,6 +159,7 @@ export function AppSidebar() {
             defaultOpen: true,
             items: [
               { title: t('absences'), url: '/absences', icon: Calendar },
+              { title: t('careTime'), url: '/care-time', icon: CalendarClock },
               { title: t('forms'), url: '/forms', icon: ClipboardCheck },
               { title: t('messages'), url: '/messages', icon: MessageSquare },
             ],
@@ -163,7 +177,15 @@ export function AppSidebar() {
     }
   };
 
-  const menuGroups = getMenuGroups();
+  // Care time is opt-in per daycare. Filtering here rather than inside each
+  // role's list keeps the one rule in one place, and a group left empty by the
+  // filter is dropped so no heading is rendered over nothing.
+  const menuGroups = getMenuGroups()
+    .map((group) => ({
+      ...group,
+      items: careTimeEnabled ? group.items : group.items.filter((item) => !careTimeUrls.includes(item.url)),
+    }))
+    .filter((group) => group.items.length > 0);
 
   /**
    * On a phone the menu is a drawer covering the screen, so it has to be dismissed

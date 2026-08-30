@@ -19,6 +19,10 @@ import {
   formSubmissions,
   childConsents,
   pushTokens,
+  childContracts,
+  reservationTemplates,
+  attendanceReservations,
+  attendanceRecords,
   deleteRequests,
   sessionTokens,
   type Municipality,
@@ -30,6 +34,12 @@ import {
   type Child,
   type InsertChild,
   type UpdateChild,
+  type ChildContract,
+  type InsertChildContract,
+  type ReservationTemplate,
+  type AttendanceReservation,
+  type InsertReservation,
+  type AttendanceRecord,
   type Entry,
   type InsertEntry,
   type Trip,
@@ -288,6 +298,22 @@ export interface IStorage {
     formSubmissions: FormSubmission[];
   }>;
   
+  // Care time: contracts, reservations, realised attendance
+  getChildContracts(childId: number, daycareId: number): Promise<ChildContract[]>;
+  getContractCoveringDate(childId: number, daycareId: number, date: string): Promise<ChildContract | undefined>;
+  createChildContract(contract: InsertChildContract & { daycareId: number; createdById: number }): Promise<ChildContract>;
+  getReservationTemplate(childId: number, daycareId: number): Promise<ReservationTemplate[]>;
+  replaceReservationTemplate(childId: number, daycareId: number, createdById: number, days: Array<{ weekday: number; startTime: string; endTime: string }>): Promise<ReservationTemplate[]>;
+  getReservations(daycareId: number, from: string, to: string, childIds?: number[]): Promise<AttendanceReservation[]>;
+  upsertReservation(reservation: InsertReservation & { daycareId: number; createdById: number }): Promise<AttendanceReservation>;
+  deleteReservation(childId: number, daycareId: number, date: string): Promise<boolean>;
+  getAttendanceRecords(daycareId: number, from: string, to: string, childIds?: number[]): Promise<AttendanceRecord[]>;
+  getOpenAttendanceRecord(childId: number, daycareId: number): Promise<AttendanceRecord | undefined>;
+  createAttendanceCheckIn(childId: number, daycareId: number, date: string, at: Date, byId: number): Promise<AttendanceRecord>;
+  closeAttendanceRecord(id: number, daycareId: number, at: Date, byId: number): Promise<AttendanceRecord | undefined>;
+  cleanupOldReservations(retentionMonths: number): Promise<number>;
+  cleanupOldAttendanceRecords(retentionMonths: number): Promise<number>;
+
   // Session Token Management (VAHTI compliance - secure logout)
   createSessionToken(userId: number, tokenHash: string, expiresAt: Date): Promise<SessionToken>;
   getSessionToken(tokenHash: string): Promise<SessionToken | undefined>;
@@ -473,6 +499,19 @@ export class DatabaseStorage implements IStorage {
         byUser(childConsents.grantedById));
       await deleteWhere(guardians, byUser(guardians.userId), byChild(guardians.childId));
       await deleteWhere(entries, byChild(entries.childId), byUser(entries.staffId));
+      await deleteWhere(attendanceRecords,
+        byChild(attendanceRecords.childId),
+        byUser(attendanceRecords.checkedInById),
+        byUser(attendanceRecords.checkedOutById));
+      await deleteWhere(attendanceReservations,
+        byChild(attendanceReservations.childId),
+        byUser(attendanceReservations.createdById));
+      await deleteWhere(reservationTemplates,
+        byChild(reservationTemplates.childId),
+        byUser(reservationTemplates.createdById));
+      await deleteWhere(childContracts,
+        byChild(childContracts.childId),
+        byUser(childContracts.createdById));
       await deleteWhere(absences,
         eq(absences.daycareId, id),
         byChild(absences.childId),
@@ -628,6 +667,251 @@ export class DatabaseStorage implements IStorage {
     return child || undefined;
   }
 
+  // ===== Care time =====
+  //
+  // Every read and write below is scoped by daycareId as well as by the id it was
+  // given, so a guessed child id from another tenant matches nothing rather than
+  // returning a row.
+
+  async getChildContracts(childId: number, daycareId: number): Promise<ChildContract[]> {
+    return await db
+      .select()
+      .from(childContracts)
+      .where(and(eq(childContracts.childId, childId), eq(childContracts.daycareId, daycareId)))
+      .orderBy(desc(childContracts.validFrom));
+  }
+
+  /**
+   * The contract in force on a given day. Open-ended contracts (no validTo) count
+   * from validFrom onwards, which is how a current arrangement is stored.
+   */
+  async getContractCoveringDate(
+    childId: number,
+    daycareId: number,
+    date: string,
+  ): Promise<ChildContract | undefined> {
+    const [contract] = await db
+      .select()
+      .from(childContracts)
+      .where(
+        and(
+          eq(childContracts.childId, childId),
+          eq(childContracts.daycareId, daycareId),
+          lte(childContracts.validFrom, date),
+          or(isNull(childContracts.validTo), gte(childContracts.validTo, date)),
+        ),
+      )
+      .orderBy(desc(childContracts.validFrom))
+      .limit(1);
+    return contract || undefined;
+  }
+
+  async createChildContract(
+    contract: InsertChildContract & { daycareId: number; createdById: number },
+  ): Promise<ChildContract> {
+    const [created] = await db.insert(childContracts).values({
+      childId: contract.childId,
+      daycareId: contract.daycareId,
+      monthlyHours: contract.monthlyHours,
+      validFrom: contract.validFrom,
+      validTo: contract.validTo ?? null,
+      createdById: contract.createdById,
+    }).returning();
+    return created;
+  }
+
+  async getReservationTemplate(childId: number, daycareId: number): Promise<ReservationTemplate[]> {
+    return await db
+      .select()
+      .from(reservationTemplates)
+      .where(and(eq(reservationTemplates.childId, childId), eq(reservationTemplates.daycareId, daycareId)))
+      .orderBy(asc(reservationTemplates.weekday));
+  }
+
+  /**
+   * Replaces the whole weekly pattern rather than merging into it, because a
+   * guardian who removes Friday expects Friday to be gone, and a merge would
+   * silently keep it.
+   */
+  async replaceReservationTemplate(
+    childId: number,
+    daycareId: number,
+    createdById: number,
+    days: Array<{ weekday: number; startTime: string; endTime: string }>,
+  ): Promise<ReservationTemplate[]> {
+    await db
+      .delete(reservationTemplates)
+      .where(and(eq(reservationTemplates.childId, childId), eq(reservationTemplates.daycareId, daycareId)));
+
+    if (days.length === 0) return [];
+
+    return await db.insert(reservationTemplates).values(
+      days.map((day) => ({
+        childId,
+        daycareId,
+        weekday: day.weekday,
+        startTime: day.startTime,
+        endTime: day.endTime,
+        createdById,
+        updatedAt: new Date(),
+      })),
+    ).returning();
+  }
+
+  async getReservations(
+    daycareId: number,
+    from: string,
+    to: string,
+    childIds?: number[],
+  ): Promise<AttendanceReservation[]> {
+    const scope = [
+      eq(attendanceReservations.daycareId, daycareId),
+      gte(attendanceReservations.date, from),
+      lte(attendanceReservations.date, to),
+    ];
+    if (childIds) {
+      if (childIds.length === 0) return [];
+      scope.push(inArray(attendanceReservations.childId, childIds));
+    }
+    return await db
+      .select()
+      .from(attendanceReservations)
+      .where(and(...scope))
+      .orderBy(asc(attendanceReservations.date));
+  }
+
+  /** One reservation per child per day, so re-booking a day replaces it. */
+  async upsertReservation(
+    reservation: InsertReservation & { daycareId: number; createdById: number },
+  ): Promise<AttendanceReservation> {
+    const [saved] = await db
+      .insert(attendanceReservations)
+      .values({
+        childId: reservation.childId,
+        daycareId: reservation.daycareId,
+        date: reservation.date,
+        startTime: reservation.startTime,
+        endTime: reservation.endTime,
+        createdById: reservation.createdById,
+      })
+      .onConflictDoUpdate({
+        target: [attendanceReservations.childId, attendanceReservations.date],
+        set: {
+          startTime: reservation.startTime,
+          endTime: reservation.endTime,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return saved;
+  }
+
+  async deleteReservation(childId: number, daycareId: number, date: string): Promise<boolean> {
+    const removed = await db
+      .delete(attendanceReservations)
+      .where(
+        and(
+          eq(attendanceReservations.childId, childId),
+          eq(attendanceReservations.daycareId, daycareId),
+          eq(attendanceReservations.date, date),
+        ),
+      )
+      .returning();
+    return removed.length > 0;
+  }
+
+  async getAttendanceRecords(
+    daycareId: number,
+    from: string,
+    to: string,
+    childIds?: number[],
+  ): Promise<AttendanceRecord[]> {
+    const scope = [
+      eq(attendanceRecords.daycareId, daycareId),
+      gte(attendanceRecords.date, from),
+      lte(attendanceRecords.date, to),
+    ];
+    if (childIds) {
+      if (childIds.length === 0) return [];
+      scope.push(inArray(attendanceRecords.childId, childIds));
+    }
+    return await db
+      .select()
+      .from(attendanceRecords)
+      .where(and(...scope))
+      .orderBy(asc(attendanceRecords.checkInAt));
+  }
+
+  /** The stay a child is currently inside, if any. Used to make check-in idempotent. */
+  async getOpenAttendanceRecord(childId: number, daycareId: number): Promise<AttendanceRecord | undefined> {
+    const [open] = await db
+      .select()
+      .from(attendanceRecords)
+      .where(
+        and(
+          eq(attendanceRecords.childId, childId),
+          eq(attendanceRecords.daycareId, daycareId),
+          isNull(attendanceRecords.checkOutAt),
+        ),
+      )
+      .orderBy(desc(attendanceRecords.checkInAt))
+      .limit(1);
+    return open || undefined;
+  }
+
+  async createAttendanceCheckIn(
+    childId: number,
+    daycareId: number,
+    date: string,
+    at: Date,
+    byId: number,
+  ): Promise<AttendanceRecord> {
+    const [created] = await db.insert(attendanceRecords).values({
+      childId,
+      daycareId,
+      date,
+      checkInAt: at,
+      checkedInById: byId,
+    }).returning();
+    return created;
+  }
+
+  async closeAttendanceRecord(
+    id: number,
+    daycareId: number,
+    at: Date,
+    byId: number,
+  ): Promise<AttendanceRecord | undefined> {
+    const [closed] = await db
+      .update(attendanceRecords)
+      .set({ checkOutAt: at, checkedOutById: byId })
+      .where(and(eq(attendanceRecords.id, id), eq(attendanceRecords.daycareId, daycareId)))
+      .returning();
+    return closed || undefined;
+  }
+
+  async cleanupOldReservations(retentionMonths: number): Promise<number> {
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - retentionMonths);
+
+    const result = await db
+      .delete(attendanceReservations)
+      .where(lte(attendanceReservations.createdAt, cutoffDate))
+      .returning();
+    return result.length;
+  }
+
+  async cleanupOldAttendanceRecords(retentionMonths: number): Promise<number> {
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - retentionMonths);
+
+    const result = await db
+      .delete(attendanceRecords)
+      .where(lte(attendanceRecords.createdAt, cutoffDate))
+      .returning();
+    return result.length;
+  }
+
   async deleteChild(id: number): Promise<void> {
     // Delete guardian relations first
     await this.deleteGuardiansByChildId(id);
@@ -640,7 +924,13 @@ export class DatabaseStorage implements IStorage {
     
     // Delete related absences
     await db.delete(absences).where(eq(absences.childId, id));
-    
+
+    // Care time rows reference the child, so they have to go before it does.
+    await db.delete(attendanceRecords).where(eq(attendanceRecords.childId, id));
+    await db.delete(attendanceReservations).where(eq(attendanceReservations.childId, id));
+    await db.delete(reservationTemplates).where(eq(reservationTemplates.childId, id));
+    await db.delete(childContracts).where(eq(childContracts.childId, id));
+
     // Delete the child
     await db.delete(children).where(eq(children.id, id));
   }

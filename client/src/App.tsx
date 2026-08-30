@@ -29,6 +29,8 @@ import { MunicipalitiesPage } from "@/pages/MunicipalitiesPage";
 import AuditLogsPage from "@/pages/AuditLogsPage";
 import ChangePasswordPage from "@/pages/ChangePasswordPage";
 import AbsencesPage from "@/pages/AbsencesPage";
+import { CareTimePage } from "@/pages/CareTimePage";
+import { AttendancePage } from "@/pages/AttendancePage";
 import MessagesPage from "@/pages/MessagesPage";
 import DocumentsPage from "@/pages/DocumentsPage";
 import MealMenuPage from "@/pages/MealMenuPage";
@@ -305,6 +307,26 @@ function Router() {
         <ProtectedRoute>
           <AuthenticatedLayout>
             <AuditLogsPage />
+          </AuthenticatedLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/care-time">
+        <ProtectedRoute>
+          <AuthenticatedLayout>
+            <PersonalDataRoute>
+              <CareTimePage />
+            </PersonalDataRoute>
+          </AuthenticatedLayout>
+        </ProtectedRoute>
+      </Route>
+
+      <Route path="/attendance">
+        <ProtectedRoute>
+          <AuthenticatedLayout>
+            <PersonalDataRoute>
+              <AttendancePage />
+            </PersonalDataRoute>
           </AuthenticatedLayout>
         </ProtectedRoute>
       </Route>

@@ -8,7 +8,7 @@ import { getCached, setCache, invalidateCache } from "./db";
 import { csvFile } from "./csv";
 import fs from "fs";
 import path from "path";
-import { loginSchema, superAdminLoginSchema, insertChildSchema, updateChildSchema, insertEntrySchema, insertTripSchema, insertTripResponseSchema, createUserSchema, insertDaycareSchema, insertAbsenceSchema, insertMessageSchema, insertDocumentSchema, insertDaycareGroupSchema, changePasswordSchema, insertFormSchema, insertFormSubmissionSchema, insertChildConsentSchema, insertMunicipalitySchema, updateMunicipalitySchema } from "@shared/schema";
+import { loginSchema, superAdminLoginSchema, insertChildSchema, updateChildSchema, insertReservationSchema, reservationTemplateSchema, applyTemplateSchema, checkInSchema, checkOutSchema, insertChildContractSchema, insertEntrySchema, insertTripSchema, insertTripResponseSchema, createUserSchema, insertDaycareSchema, insertAbsenceSchema, insertMessageSchema, insertDocumentSchema, insertDaycareGroupSchema, changePasswordSchema, insertFormSchema, insertFormSubmissionSchema, insertChildConsentSchema, insertMunicipalitySchema, updateMunicipalitySchema } from "@shared/schema";
 import type { User, Child, MealMenu } from "@shared/schema";
 import { getTodaysMenu, fetchAndSaveMenu, fetchAndSaveMenuForDaycare, dietInfoLegend } from "./menuScraper";
 import {
@@ -38,6 +38,18 @@ import {
   isStrongPassword,
   MAX_FAILED_ATTEMPTS,
 } from "./auth";
+import {
+  isReservationLocked,
+  reservationDeadline,
+  reservedMinutes,
+  realisedMinutes,
+  isPresent,
+  isoWeekday,
+  monthBounds,
+  careTimeAccessDenial,
+  canActOnChild,
+  zonedDate,
+} from "./careTime";
 
 // GDPR compliance: Super admin cannot access personal data
 const GDPR_DENIAL_MESSAGE = "Sinulla ei ole oikeuksia nähdä tätä sisältöä (GDPR)";
@@ -3396,6 +3408,562 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Error fetching audit logs:', error);
       res.status(500).json({ error: 'Failed to fetch audit logs' });
+    }
+  });
+
+  // ===== CARE TIME: reservations and realised attendance =====
+  //
+  // All new endpoints, under their own prefix. Nothing above this line changed,
+  // so a phone app built before this release keeps working unmodified.
+
+  /**
+   * Common gate for every care-time endpoint.
+   *
+   * Returns the daycare when the caller may proceed, and answers the request
+   * itself otherwise. Three things are checked in one place because forgetting
+   * any of them on one endpoint is how tenant leaks happen: super admin is
+   * refused personal data, the caller must belong to a daycare, and the daycare
+   * must have the feature switched on.
+   */
+  async function careTimeContext(
+    req: AuthRequest,
+    res: Response,
+  ): Promise<{ user: NonNullable<AuthRequest['user']>; daycare: Awaited<ReturnType<typeof storage.getDaycare>> } | null> {
+    const user = req.user!;
+    const daycare = user.daycareId ? await storage.getDaycare(user.daycareId) : undefined;
+
+    const denial = careTimeAccessDenial(user, daycare);
+    if (denial) {
+      if (denial.reason === 'gdpr') {
+        await logAudit(user.id, user.role, null, 'ACCESS_DENIED', 'care_time');
+        res.status(denial.status).json({ error: GDPR_DENIAL_MESSAGE });
+      } else if (denial.reason === 'disabled') {
+        res.status(denial.status).json({ error: 'Care time reservations are not enabled for this daycare' });
+      } else {
+        res.status(denial.status).json({ error: 'Unauthorized' });
+      }
+      return null;
+    }
+
+    return { user, daycare };
+  }
+
+  /**
+   * The children this caller may act on: their own if a guardian, the whole
+   * daycare otherwise. Returned as ids so every query below can be narrowed with
+   * them rather than trusting a childId from the request.
+   */
+  async function accessibleChildIds(user: NonNullable<AuthRequest['user']>): Promise<number[]> {
+    if (user.role === 'guardian') {
+      const own = await storage.getChildrenByGuardian(user.id);
+      return own.map((child) => child.id);
+    }
+    const all = await storage.getChildren(user.daycareId!);
+    return all.map((child) => child.id);
+  }
+
+  const isIsoDate = (value: unknown): value is string =>
+    typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+
+  /**
+   * Whether this caller's daycare has care time switched on.
+   *
+   * Its own endpoint so the navigation can hide the pages without every other
+   * endpoint having to answer 404 first, and without widening the response of
+   * any endpoint a released phone build already reads.
+   */
+  app.get('/api/care-time/enabled', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const user = req.user!;
+      if (user.role === 'super_admin' || !user.daycareId) return res.json({ enabled: false });
+
+      const daycare = await storage.getDaycare(user.daycareId);
+      res.json({ enabled: daycare?.reservationsEnabled === true });
+    } catch (error) {
+      res.json({ enabled: false });
+    }
+  });
+
+  app.get('/api/care-time/reservations', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user } = context;
+
+      const { from, to } = req.query;
+      if (!isIsoDate(from) || !isIsoDate(to) || from > to) {
+        return res.status(400).json({ error: 'from and to must be YYYY-MM-DD, from before to' });
+      }
+
+      const childIds = await accessibleChildIds(user);
+      const reservations = await storage.getReservations(user.daycareId!, from, to, childIds);
+      res.json(reservations);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch reservations' });
+    }
+  });
+
+  app.put('/api/care-time/reservations', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user, daycare } = context;
+
+      const validatedData = insertReservationSchema.parse(req.body);
+
+      const childIds = await accessibleChildIds(user);
+      if (!canActOnChild(childIds, validatedData.childId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      // Staff may still correct a booking after it closes; the deadline exists to
+      // stop guardians changing a week the daycare has already staffed.
+      if (user.role === 'guardian' && isReservationLocked(validatedData.date, daycare!)) {
+        return res.status(409).json({
+          error: 'Reservations for that week are closed',
+          deadline: reservationDeadline(validatedData.date, daycare!).toISOString(),
+        });
+      }
+
+      const saved = await storage.upsertReservation({
+        ...validatedData,
+        daycareId: user.daycareId!,
+        createdById: user.id,
+      });
+
+      await logAudit(user.id, user.role, user.daycareId!, 'UPDATE', 'reservation', saved.id);
+      res.json(saved);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.delete('/api/care-time/reservations', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user, daycare } = context;
+
+      const childId = Number(req.query.childId);
+      const { date } = req.query;
+      if (!Number.isInteger(childId) || !isIsoDate(date)) {
+        return res.status(400).json({ error: 'childId and date are required' });
+      }
+
+      const childIds = await accessibleChildIds(user);
+      if (!canActOnChild(childIds, childId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      if (user.role === 'guardian' && isReservationLocked(date, daycare!)) {
+        return res.status(409).json({ error: 'Reservations for that week are closed' });
+      }
+
+      const removed = await storage.deleteReservation(childId, user.daycareId!, date);
+      if (!removed) return res.status(404).json({ error: 'Reservation not found' });
+
+      await logAudit(user.id, user.role, user.daycareId!, 'DELETE', 'reservation');
+      res.json({ success: true });
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.get('/api/care-time/template/:childId', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user } = context;
+
+      const childId = parseInt(req.params.childId);
+      if (Number.isNaN(childId)) return res.status(400).json({ error: 'Invalid request' });
+
+      const childIds = await accessibleChildIds(user);
+      if (!canActOnChild(childIds, childId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      res.json(await storage.getReservationTemplate(childId, user.daycareId!));
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch template' });
+    }
+  });
+
+  app.put('/api/care-time/template', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user } = context;
+
+      const validatedData = reservationTemplateSchema.parse(req.body);
+
+      const childIds = await accessibleChildIds(user);
+      if (!canActOnChild(childIds, validatedData.childId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      const weekdays = validatedData.days.map((day) => day.weekday);
+      if (new Set(weekdays).size !== weekdays.length) {
+        return res.status(400).json({ error: 'Each weekday may appear only once' });
+      }
+
+      const saved = await storage.replaceReservationTemplate(
+        validatedData.childId,
+        user.daycareId!,
+        user.id,
+        validatedData.days,
+      );
+
+      await logAudit(user.id, user.role, user.daycareId!, 'UPDATE', 'reservation_template');
+      res.json(saved);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  /**
+   * Fills a date range from the weekly pattern.
+   *
+   * Days that are already locked are skipped rather than failing the whole call,
+   * and the response says how many were skipped -- a guardian applying a pattern
+   * across a month should not be stopped by the current week being closed.
+   * Existing bookings in range are replaced, which is what "apply my pattern"
+   * means.
+   */
+  app.post('/api/care-time/template/apply', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user, daycare } = context;
+
+      const validatedData = applyTemplateSchema.parse(req.body);
+      if (!isIsoDate(validatedData.from) || !isIsoDate(validatedData.to) || validatedData.from > validatedData.to) {
+        return res.status(400).json({ error: 'from and to must be YYYY-MM-DD, from before to' });
+      }
+
+      const childIds = await accessibleChildIds(user);
+      if (!canActOnChild(childIds, validatedData.childId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      const template = await storage.getReservationTemplate(validatedData.childId, user.daycareId!);
+      if (template.length === 0) {
+        return res.status(400).json({ error: 'No weekly template saved for this child' });
+      }
+      const byWeekday = new Map(template.map((day) => [day.weekday, day]));
+
+      // Bounded so a mistyped range cannot ask for a decade of rows.
+      const MAX_DAYS = 366;
+      const days: string[] = [];
+      for (
+        let cursor = new Date(`${validatedData.from}T00:00:00Z`);
+        cursor.toISOString().slice(0, 10) <= validatedData.to && days.length <= MAX_DAYS;
+        cursor = new Date(cursor.getTime() + 86_400_000)
+      ) {
+        days.push(cursor.toISOString().slice(0, 10));
+      }
+      if (days.length > MAX_DAYS) {
+        return res.status(400).json({ error: 'Range may not exceed one year' });
+      }
+
+      let created = 0;
+      let skippedLocked = 0;
+      for (const day of days) {
+        const pattern = byWeekday.get(isoWeekday(day));
+        if (!pattern) continue;
+        if (user.role === 'guardian' && isReservationLocked(day, daycare!)) {
+          skippedLocked += 1;
+          continue;
+        }
+        await storage.upsertReservation({
+          childId: validatedData.childId,
+          date: day,
+          startTime: pattern.startTime,
+          endTime: pattern.endTime,
+          daycareId: user.daycareId!,
+          createdById: user.id,
+        });
+        created += 1;
+      }
+
+      await logAudit(user.id, user.role, user.daycareId!, 'CREATE', 'reservation', undefined, { created, skippedLocked });
+      res.json({ created, skippedLocked });
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  /**
+   * The staff device view: everyone expected today, who is here, and what was
+   * booked. One query per table rather than per child.
+   */
+  app.get('/api/care-time/today', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user } = context;
+
+      if (user.role !== 'staff' && user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      const date = isIsoDate(req.query.date) ? req.query.date : zonedDate(new Date());
+
+      const [children, reservations, records, absencesToday] = await Promise.all([
+        storage.getChildren(user.daycareId!),
+        storage.getReservations(user.daycareId!, date, date),
+        storage.getAttendanceRecords(user.daycareId!, date, date),
+        storage.getAbsencesByDateRange(user.daycareId!, new Date(`${date}T00:00:00Z`), new Date(`${date}T00:00:00Z`)),
+      ]);
+
+      const reservationByChild = new Map(reservations.map((r) => [r.childId, r]));
+      const recordsByChild = new Map<number, typeof records>();
+      for (const record of records) {
+        const existing = recordsByChild.get(record.childId) ?? [];
+        existing.push(record);
+        recordsByChild.set(record.childId, existing);
+      }
+      const absentChildIds = new Set(absencesToday.map((absence) => absence.childId));
+
+      res.json({
+        date,
+        children: children.map((child) => {
+          const childRecords = recordsByChild.get(child.id) ?? [];
+          const reservation = reservationByChild.get(child.id);
+          return {
+            childId: child.id,
+            name: child.name,
+            allergies: child.allergies,
+            reserved: reservation
+              ? { startTime: reservation.startTime, endTime: reservation.endTime }
+              : null,
+            absent: absentChildIds.has(child.id),
+            present: isPresent(childRecords),
+            realisedMinutes: realisedMinutes(childRecords),
+            openRecordId: childRecords.find((record) => record.checkOutAt === null)?.id ?? null,
+          };
+        }),
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch attendance' });
+    }
+  });
+
+  app.post('/api/care-time/check-in', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user } = context;
+
+      if (user.role !== 'staff' && user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      const validatedData = checkInSchema.parse(req.body);
+
+      const children = await storage.getChildren(user.daycareId!);
+      if (!children.some((child) => child.id === validatedData.childId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      // A second tap on an already present child returns the open stay instead of
+      // opening a rival one, so a double press at a busy door cannot produce two.
+      const open = await storage.getOpenAttendanceRecord(validatedData.childId, user.daycareId!);
+      if (open) return res.json(open);
+
+      const at = validatedData.at ? new Date(validatedData.at) : new Date();
+      const record = await storage.createAttendanceCheckIn(
+        validatedData.childId,
+        user.daycareId!,
+        zonedDate(at),
+        at,
+        user.id,
+      );
+
+      await logAudit(user.id, user.role, user.daycareId!, 'CREATE', 'attendance', record.id);
+      res.json(record);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  app.post('/api/care-time/check-out', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user } = context;
+
+      if (user.role !== 'staff' && user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      const validatedData = checkOutSchema.parse(req.body);
+
+      const open = await storage.getOpenAttendanceRecord(validatedData.childId, user.daycareId!);
+      if (!open) return res.status(404).json({ error: 'That child is not checked in' });
+
+      const at = validatedData.at ? new Date(validatedData.at) : new Date();
+      if (at.getTime() < open.checkInAt.getTime()) {
+        return res.status(400).json({ error: 'Check-out cannot be before check-in' });
+      }
+
+      const closed = await storage.closeAttendanceRecord(open.id, user.daycareId!, at, user.id);
+      if (!closed) return res.status(404).json({ error: 'That child is not checked in' });
+
+      await logAudit(user.id, user.role, user.daycareId!, 'UPDATE', 'attendance', closed.id);
+      res.json(closed);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
+    }
+  });
+
+  /** Booked against realised for one day, across the daycare. */
+  app.get('/api/care-time/comparison', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user } = context;
+
+      const date = isIsoDate(req.query.date) ? req.query.date : zonedDate(new Date());
+      const childIds = await accessibleChildIds(user);
+
+      const [reservations, records, absencesToday] = await Promise.all([
+        storage.getReservations(user.daycareId!, date, date, childIds),
+        storage.getAttendanceRecords(user.daycareId!, date, date, childIds),
+        storage.getAbsencesByDateRange(user.daycareId!, new Date(`${date}T00:00:00Z`), new Date(`${date}T00:00:00Z`)),
+      ]);
+
+      const recordsByChild = new Map<number, typeof records>();
+      for (const record of records) {
+        const existing = recordsByChild.get(record.childId) ?? [];
+        existing.push(record);
+        recordsByChild.set(record.childId, existing);
+      }
+      const absentChildIds = new Set(absencesToday.map((absence) => absence.childId));
+
+      const rows = childIds.map((childId) => {
+        const reservation = reservations.find((r) => r.childId === childId);
+        const childRecords = recordsByChild.get(childId) ?? [];
+        return {
+          childId,
+          reservedMinutes: reservation ? reservedMinutes(reservation.startTime, reservation.endTime) : 0,
+          realisedMinutes: realisedMinutes(childRecords),
+          // An absence explains a booked day that did not happen; it does not
+          // remove the booking, which the daycare still staffed for.
+          absent: absentChildIds.has(childId),
+          present: isPresent(childRecords),
+        };
+      });
+
+      await logAudit(user.id, user.role, user.daycareId!, 'VIEW', 'care_time_comparison');
+      res.json({ date, rows });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to build comparison' });
+    }
+  });
+
+  /**
+   * A month for one child: hours accrued against the agreed allowance.
+   *
+   * Deliberately stops at the numbers. No price, no invoice, no rounding rule --
+   * those are decisions for whoever builds billing, and guessing them here would
+   * bake an assumption into data that is meant to be neutral.
+   */
+  app.get('/api/care-time/summary', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user } = context;
+
+      const childId = Number(req.query.childId);
+      const month = req.query.month;
+      if (!Number.isInteger(childId) || typeof month !== 'string' || !/^\d{4}-\d{2}$/.test(month)) {
+        return res.status(400).json({ error: 'childId and month (YYYY-MM) are required' });
+      }
+
+      const childIds = await accessibleChildIds(user);
+      if (!canActOnChild(childIds, childId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      const { from, to } = monthBounds(month);
+      const [reservations, records, contract] = await Promise.all([
+        storage.getReservations(user.daycareId!, from, to, [childId]),
+        storage.getAttendanceRecords(user.daycareId!, from, to, [childId]),
+        storage.getContractCoveringDate(childId, user.daycareId!, from),
+      ]);
+
+      const reservedTotal = reservations.reduce(
+        (total, reservation) => total + reservedMinutes(reservation.startTime, reservation.endTime),
+        0,
+      );
+      const realisedTotal = realisedMinutes(records);
+      const contractMinutes = contract ? contract.monthlyHours * 60 : null;
+
+      await logAudit(user.id, user.role, user.daycareId!, 'VIEW', 'care_time_summary');
+      res.json({
+        childId,
+        month,
+        reservedMinutes: reservedTotal,
+        realisedMinutes: realisedTotal,
+        contractMonthlyHours: contract?.monthlyHours ?? null,
+        // Positive means the allowance still has room; negative means it is exceeded.
+        remainingMinutes: contractMinutes === null ? null : contractMinutes - realisedTotal,
+        openRecords: records.filter((record) => record.checkOutAt === null).length,
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to build summary' });
+    }
+  });
+
+  app.get('/api/care-time/contracts/:childId', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user } = context;
+
+      const childId = parseInt(req.params.childId);
+      if (Number.isNaN(childId)) return res.status(400).json({ error: 'Invalid request' });
+
+      const childIds = await accessibleChildIds(user);
+      if (!canActOnChild(childIds, childId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      res.json(await storage.getChildContracts(childId, user.daycareId!));
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch contracts' });
+    }
+  });
+
+  app.post('/api/care-time/contracts', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const context = await careTimeContext(req, res);
+      if (!context) return;
+      const { user } = context;
+
+      // What was agreed with the family, so the leader records it.
+      if (user.role !== 'daycareleader') {
+        return res.status(403).json({ error: 'Only administrators can record contracts' });
+      }
+
+      const validatedData = insertChildContractSchema.parse(req.body);
+
+      const children = await storage.getChildren(user.daycareId!);
+      if (!children.some((child) => child.id === validatedData.childId)) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      const created = await storage.createChildContract({
+        ...validatedData,
+        daycareId: user.daycareId!,
+        createdById: user.id,
+      });
+
+      await logAudit(user.id, user.role, user.daycareId!, 'CREATE', 'child_contract', created.id);
+      res.json(created);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid request' });
     }
   });
 

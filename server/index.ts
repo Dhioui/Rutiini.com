@@ -191,6 +191,10 @@ app.use((req, res, next) => {
           const ABSENCES_RETENTION_MONTHS = parseInt(process.env.RETENTION_ABSENCES_MONTHS || '24', 10);
           const NOTIFICATIONS_RETENTION_MONTHS = parseInt(process.env.RETENTION_NOTIFICATIONS_MONTHS || '6', 10);
           const ENTRIES_RETENTION_MONTHS = parseInt(process.env.RETENTION_ENTRIES_MONTHS || '24', 10);
+          // Care time feeds billing, which is reconciled long after the fact, so
+          // these default to longer than the operational records above.
+          const RESERVATIONS_RETENTION_MONTHS = parseInt(process.env.RETENTION_RESERVATIONS_MONTHS || '36', 10);
+          const ATTENDANCE_RETENTION_MONTHS = parseInt(process.env.RETENTION_ATTENDANCE_MONTHS || '36', 10);
         
           // Cleanup audit logs
           const auditLogsDeleted = await storage.cleanupOldAuditLogs(AUDIT_RETENTION_MONTHS);
@@ -216,6 +220,14 @@ app.use((req, res, next) => {
           const entriesDeleted = await storage.cleanupOldEntries(ENTRIES_RETENTION_MONTHS);
           log(`[Cron] Entries deleted: ${entriesDeleted} (retention: ${ENTRIES_RETENTION_MONTHS} months)`);
         
+          // Cleanup care time reservations
+          const reservationsDeleted = await storage.cleanupOldReservations(RESERVATIONS_RETENTION_MONTHS);
+          log(`[Cron] Reservations deleted: ${reservationsDeleted} (retention: ${RESERVATIONS_RETENTION_MONTHS} months)`);
+
+          // Cleanup realised attendance records
+          const attendanceDeleted = await storage.cleanupOldAttendanceRecords(ATTENDANCE_RETENTION_MONTHS);
+          log(`[Cron] Attendance records deleted: ${attendanceDeleted} (retention: ${ATTENDANCE_RETENTION_MONTHS} months)`);
+
           // Cleanup expired session tokens
           const expiredTokens = await storage.deleteExpiredSessionTokens();
           log(`[Cron] Expired session tokens deleted: ${expiredTokens}`);
