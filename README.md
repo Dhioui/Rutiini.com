@@ -2,8 +2,8 @@
 
 Multi-tenant early childhood education management for Finnish municipalities.
 Brings a daycare, its staff and guardians into one service: child records, daily
-entries, absences, trips and permissions, messaging, documents, forms and meal
-menus — in six languages, GDPR-first.
+entries, absences, care time bookings, trips and permissions, messaging,
+documents, forms and meal menus — in six languages, GDPR-first.
 
 - **Web** — React + Vite
 - **API** — Express + TypeScript
@@ -140,9 +140,11 @@ Every variable is documented in [`.env.example`](.env.example). Only
 - `RATE_LIMIT_*` — authenticated requests are counted **per signed-in user**, so a
   daycare behind one public IP address does not share a single budget. Only
   anonymous traffic is counted per IP.
-- `RETENTION_*` — how long audit logs, messages, trips, absences, notifications
-  and daily entries are kept before the nightly job deletes them. Set these to
-  match the retention period agreed in the data processing agreement.
+- `RETENTION_*` — how long audit logs, messages, trips, absences, notifications,
+  daily entries, care time bookings and attendance records are kept before the
+  nightly job deletes them. Set these to match the retention period agreed in the
+  data processing agreement. The two care time periods default to longer than the
+  rest, because a deleted stay cannot be recomputed for a billing period.
 
 ### Secrets
 
@@ -183,14 +185,45 @@ password changed *and* a look at whether anything was read.
 
 ## Data protection
 
-- **Tenant isolation.** Every query is scoped by `daycareId`. Staff see only their
-  own daycare's children; guardians see only their own children.
-- **Consent.** Children have no accounts and cannot sign in — they exist only as
-  records. Only a guardian can grant or withdraw consent, and only for a child
+Written to be checked rather than believed. Each statement is deliberately narrow;
+where a boundary has an exception, the exception is named rather than left for a
+reader to discover.
+
+- **Tenant isolation.** Every query returning a daycare's records is scoped by
+  `daycareId`. Staff see only their own daycare's children; guardians see only the
+  children they are linked to. Two groups of endpoint sit outside that scoping by
+  design: the super admin routes described below, and endpoints returning a single
+  user's own data — notifications, push tokens, submitted forms, deletion requests
+  — which are scoped by user id instead, and are therefore narrower, not wider.
+
+- **Consent.** Children have no accounts and cannot sign in; they exist only as
+  records. Only a guardian may grant or withdraw a consent, and only for a child
   they are linked to. Staff and daycare leaders cannot consent on a child's behalf.
-- **Super admin** can read anonymised statistics only; personal data endpoints
-  return 403.
-- **Audit log** records access and changes without storing personal data.
+
+- **Super admin** reads figures and the organisational structure it administers.
+
+  | Reachable | Not reachable |
+  |---|---|
+  | Municipalities and daycares | A child's name, date of birth, allergies, diet or group |
+  | Per-daycare counts of children, staff, guardians, trips and absences | Daily entries, absences, messages, documents, forms, trips, consents |
+  | Names and email addresses of **daycare leaders**, whose accounts it creates and removes | Names or contact details of guardians or staff |
+  | Audit log rows, stripped of `metadata` and of the acting person's id | Care time bookings and realised attendance |
+
+  Every endpoint carrying a child's or a guardian's personal data answers 403 to
+  super admin and records the refusal in the audit log. The single place where
+  super admin does reach personal data is the daycare leader list, because it
+  creates those accounts; that response is limited to id, name and email address,
+  and contains no password or reset token material.
+
+- **Audit log** records who did what to which kind of record, and when. Entity
+  identifiers are hashed. It stores no names, no addresses, no message content and
+  no field of a child's record. It does store **the IP address of a sign-in
+  attempt** in `metadata`, which is personal data and is stated here for that
+  reason; the audit log API never returns `metadata` or the acting person's id, so
+  a stored IP address is not readable through the application. IP addresses are
+  deleted with the rest of the audit log at `RETENTION_AUDIT_MONTHS`, 12 months by
+  default.
+
 - **Retention** is enforced nightly and is configurable per deployment.
 - **Subject access requests** (`/api/gdpr/export`) and deletion requests are
   deliberately exempt from the list row caps, so an export is always complete.
@@ -204,8 +237,10 @@ npx vitest run   # tests
 npm run build    # production build
 ```
 
-Tests cover authentication, authorisation, validation, query shaping and
-translation completeness, and need no database.
+Tests cover authentication, authorisation, tenant isolation, validation, query
+shaping, care time arithmetic and translation completeness. None of them need a
+database: the isolation suite drives the real routes over HTTP against a mocked
+storage layer, so it cannot reach one even by accident.
 
 ## Mobile apps
 

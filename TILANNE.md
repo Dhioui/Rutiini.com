@@ -23,10 +23,21 @@ RTL-tuki. Isoissa kaupungeissa vieraskielisten perheiden osuus varhaiskasvatukse
 on merkittävä, ja huoltajaviestintä on juuri se kohta jossa yhteinen kieli loppuu
 kesken.
 
-**Ylläpitäjä ei näe henkilötietoja.** Tämä ei ole lupaus vaan rakenne: pääkäyttäjä
-saa 403:n jokaiselta henkilötietoja käsittelevältä reitiltä ja yritys kirjautuu
-auditointilokiin. Useimmissa järjestelmissä toimittajan pääkäyttäjä voi teknisesti
-nähdä kaiken, ja asia hoidetaan sopimuspykälällä.
+**Ylläpitäjä ei näe lasten eikä huoltajien tietoja.** Tämä ei ole lupaus vaan
+rakenne: pääkäyttäjä saa 403:n jokaiselta lapsen tai huoltajan tietoja
+käsittelevältä reitiltä, ja yritys kirjautuu auditointilokiin. Useimmissa
+järjestelmissä toimittajan pääkäyttäjä voi teknisesti nähdä kaiken, ja asia
+hoidetaan sopimuspykälällä.
+
+Sanottuna tarkasti, koska tämä lause luetaan tietosuojaselosteen rinnalla:
+pääkäyttäjä **näkee** kunnat, päiväkodit, lukumäärät päiväkodeittain,
+auditointilokin rivit ilman `metadata`-kenttää ja tekijän tunnistetta, sekä
+**päiväkodinjohtajien nimet ja sähköpostiosoitteet**, koska hän luo ja poistaa ne
+tunnukset. Hän **ei näe** yhdenkään lapsen nimeä, syntymäaikaa, allergioita,
+ruokavaliota eikä ryhmää, ei päivän merkintöjä, poissaoloja, viestejä,
+asiakirjoja, lomakkeita, retkiä, suostumuksia, hoitoaikavarauksia eikä
+toteutuneita läsnäoloja — eikä huoltajien tai henkilökunnan nimiä tai
+yhteystietoja.
 
 ---
 
@@ -37,7 +48,7 @@ nähdä kaiken, ja asia hoidetaan sopimuspykälällä.
 | **Huoltaja** | Oman lapsensa päivän merkinnät, poissaoloilmoitus, viestit, ruokalista, lomakkeet, omat tiedot ja niiden poisto |
 | **Henkilökunta** | Oman päiväkodin lapset, merkintöjen kirjaus, poissaolot, viestit, allergiat ja ruokavaliot |
 | **Johtaja** | Kaikki edellinen sekä käyttäjienhallinta, CSV-raportit, auditointiloki, asetukset |
-| **Pääkäyttäjä** | Kunnat, päiväkodit, ylläpitäjät ja **anonymisoidut tilastot** — ei yhtään henkilötietoa |
+| **Pääkäyttäjä** | Kunnat, päiväkodit, anonymisoidut lukumäärät ja päiväkodinjohtajien tunnukset (nimi ja sähköposti). **Ei lasten eikä huoltajien tietoja.** |
 
 Lapsilla ei ole tunnuksia eivätkä he kirjaudu sisään. He ovat vain tietueita, ja
 suostumuksen antaa aina huoltaja.
@@ -50,6 +61,11 @@ suostumuksen antaa aina huoltaja.
   vapaasti määriteltäviä eivätkä lukittuja tietokantaan
 - **Poissaolot** — huoltaja ilmoittaa muutamalla napautuksella; sairaus,
   myöhästyminen ja aikainen haku erikseen
+- **Hoitoaikavaraukset** — huoltaja varaa ajat viikkopohjalla, varaukset
+  lukkiutuvat ennen viikkoa; henkilökunta kirjaa tulon ja lähdön ovella, ja
+  varattua verrataan toteutuneeseen päivittäin ja kuukausittain sopimuksen
+  tuntirajaa vasten. **Päiväkotikohtainen asetus, oletuksena pois päältä.**
+  Laskutusta ei ole — vain luvut joiden päälle se voidaan rakentaa.
 - **Allergiat ja ruokavaliot** — allergia näkyy punaisena varoituksena joka
   paikassa, ruokavalio erikseen; henkilökunta saa kirjata molemmat
 - **Viestit** — huoltajan ja henkilökunnan välillä, liitteineen
@@ -60,7 +76,7 @@ suostumuksen antaa aina huoltaja.
 - **Push-ilmoitukset** puhelimeen
 - **CSV-raportit** — lapsilista, merkinnät, poissaolot, läsnäolo
 - **GDPR-itsepalvelu** — huoltaja saa omat tietonsa ulos tai poistettavaksi
-- **Auditointiloki** — kirjaa toimet ilman henkilötietoja
+- **Auditointiloki** — kirjaa kuka teki mitä ja millaiselle tietueelle. Tunnisteet tiivistetään. Ei nimiä, ei viestien sisältöä, ei lapsen tietoja. Kirjautumisyrityksestä tallentuu **IP-osoite**, joka on henkilötietoa; rajapinta ei koskaan palauta sitä, ja se poistuu säilytysajan mukana
 - **Automaattinen säilytysaikojen siivous** — öinen ajo, konfiguroitava
 
 Sama koodi ajaa selaimessa, iOS:llä ja Androidilla.
@@ -77,7 +93,6 @@ Lue tämä ennen kuin lupaat kenellekään mitään.
 | **Suomi.fi-tunnistautuminen ja -valtuudet** | Kirjautuminen on sähköposti ja salasana. Ei vahvaa tunnistautumista. |
 | **Hakemus ja sijoituspäätös** | Ei hakemusten käsittelyä eikä päätöksiä. |
 | **Asiakasmaksut ja laskutus** | Ei maksuja, ei laskutusaineistoa, ei palveluseteliä. |
-| **Hoitoaikavaraukset ja toteumat** | Ei hoitoaikojen suunnittelua eikä toteumien seurantaa. |
 | **Vasu** | Ei varhaiskasvatussuunnitelman asiakirjaa. |
 | **Henkilöstön työvuorot ja mitoitus** | Ei työvuorosuunnittelua eikä mitoituslaskentaa. |
 
@@ -92,14 +107,14 @@ päiväkodille se toimii sellaisenaan.
 
 | | |
 |---|---|
-| Omaa koodia | 26 895 riviä |
-| Tietokantatauluja | 22 |
-| API-päätepisteitä | 92 |
-| Sivuja | 29 |
+| Omaa koodia | 29 584 riviä |
+| Tietokantatauluja | 26 |
+| API-päätepisteitä | 106 |
+| Sivuja | 31 |
 | Kieliä | 6 |
-| Yksikkötestejä | 243, 14 tiedostossa |
+| Yksikkötestejä | 350, 16 tiedostossa |
 | Selaintestejä | 12 skriptiä |
-| Henkilötietoreittejä pääkäyttäjältä suljettuna | 19 |
+| Henkilötietoreittejä pääkäyttäjältä suljettuna | 23 |
 
 Typecheck, testit ja tuotantobuild ovat puhtaat. CI ajaa nämä jokaisella pushilla
 ja kääntää myös Android-debug-APK:n.
@@ -114,9 +129,11 @@ Kaikki yllä oleva on todennettu testeillä ja selainajoilla, ei arjen käytöll
 **Perusta** — moniasiakkuus päiväkodeittain, roolipohjaiset oikeudet, kuuden kielen
 käännökset, mobiilikuoret Capacitorilla, Docker ja itse ajettava asennus.
 
-**Tietosuoja** — pääkäyttäjän eristys henkilötiedoista, auditointiloki ilman
-henkilötietoja, säilytysaikojen automaattinen toteutus, GDPR-vienti ja
-poistopyynnöt, DPIA-materiaali.
+**Tietosuoja** — pääkäyttäjän eristys lasten ja huoltajien tiedoista,
+auditointiloki ilman nimiä tai lapsen tietoja (kirjautumisen IP-osoite tallentuu,
+ks. yllä), säilytysaikojen automaattinen toteutus, GDPR-vienti ja poistopyynnöt,
+DPIA-materiaali. Tenanttieristys on todennettu ajamalla oikeita reittejä vasten
+hyökkäystestit, jotka on varmistettu kaatumaan kun suojaus poistetaan.
 
 **Suorituskyky** — tietokantaindeksit, tunnistautumisen kysely yhteen hakuun,
 listojen sivutus, N+1-kyselyiden purku, vastausten pakkaus, monen instanssin
@@ -150,7 +167,7 @@ turvallinen välimuisti ja ajastettujen töiden lukitus.
 **Ennen ensimmäistä käyttäjää**
 
 1. Palvelin pystyyn HTTPS-osoitteeseen — ilman tätä demoa ei voi näyttää
-2. `npm run db:push` — luo allergia- ja ruokavaliosarakkeet
+2. `npm run db:push` — luo allergia- ja ruokavaliosarakkeet sekä hoitoaikataulut
 3. `JWT_SECRET` ja `SMTP_HOST` asetettuna; tuotanto kieltäytyy käynnistymästä ilman
 
 **Tiedossa olevat puutteet joita ei ole korjattu**
