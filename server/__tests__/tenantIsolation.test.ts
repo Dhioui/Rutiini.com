@@ -121,6 +121,30 @@ vi.mock('../storage', () => {
     deleteReservation: async () => { writes.push(['deleteReservation', null]); return true; },
 
     createAuditLog: async () => ({ id: 1 }),
+
+    // Super admin surface.
+    getAllDaycares: async () => daycares,
+    getMunicipalities: async () => [{ id: 1, name: 'Espoo', code: 'ESP', isActive: true }],
+    getMunicipality: async (id: number) =>
+      id === 1 ? { id: 1, name: 'Espoo', code: 'ESP', isActive: true } : undefined,
+    getDaycaresByMunicipality: async () => daycares,
+    getDaycareLeadersByDaycare: async (daycareId: number) =>
+      users.filter((u) => u.role === 'daycareleader' && u.daycareId === daycareId),
+    getAnonymizedStats: async () => ({
+      totalDaycares: 2, totalChildren: 2, totalStaff: 1, totalGuardians: 1,
+      totalTrips: 0, totalAbsencesToday: 0,
+      daycareStats: daycares.map((d) => ({
+        daycareId: d.id, daycareName: d.name,
+        childrenCount: 1, staffCount: 1, guardianCount: 1,
+      })),
+    }),
+    // Deliberately carries personal data in the fields the route must strip.
+    getAuditLogs: async () => [{
+      id: 1, timestamp: new Date(), actorId: 20, actorRole: 'daycareleader',
+      daycareId: DAYCARE_B, action: 'VIEW', entityType: 'child',
+      entityIdHash: 'hash:200',
+      metadata: { childName: 'Bertta B', guardianEmail: 'leader.b@example.invalid' },
+    }],
   };
 
   return {
@@ -379,4 +403,88 @@ describe('Sweep: every authenticated GET with an identifier', () => {
       expect(result.text).not.toContain('Aino A');
     });
   }
+});
+
+/**
+ * What super admin is allowed to see.
+ *
+ * The claim the product makes is specific: super admin reads anonymised figures
+ * and never reaches children or guardians. These tests hold that claim to the
+ * code, and they also pin the one place where the surface is wider than the
+ * slogan -- the administrator list -- so that a future change there has to be
+ * deliberate rather than accidental.
+ */
+describe('Super admin sees figures, not families', () => {
+  const FAMILY_DATA = ['Aino A', 'Bertta B', 'PÄHKINÄ-B'];
+
+  const superAdminRoutes = [
+    '/api/super-admin/stats',
+    '/api/super-admin/audit-logs',
+    '/api/super-admin/admins',
+    '/api/municipalities',
+    '/api/municipalities/1',
+    '/api/municipalities/1/daycares',
+    '/api/daycares',
+  ];
+
+  for (const path of superAdminRoutes) {
+    it(`${path} contains no child or guardian data`, async () => {
+      const result = await call('GET', path, 'super');
+      expect(result.status).toBe(200);
+      for (const value of FAMILY_DATA) {
+        expect(result.text).not.toContain(value);
+      }
+    });
+  }
+
+  it('statistics are counts and daycare names, nothing per person', async () => {
+    const result = await call('GET', '/api/super-admin/stats', 'super');
+    const stats = JSON.parse(result.text);
+
+    expect(typeof stats.totalChildren).toBe('number');
+    for (const row of stats.daycareStats) {
+      expect(Object.keys(row).sort()).toEqual(
+        ['childrenCount', 'daycareId', 'daycareName', 'guardianCount', 'staffCount'],
+      );
+    }
+    // A count of children is not a child.
+    expect(result.text).not.toContain('birthdate');
+    expect(result.text).not.toContain('allergies');
+  });
+
+  it('audit log entries drop the metadata that carries names', async () => {
+    // The stored row in the fake deliberately holds a child's name and an email
+    // in metadata. If the route ever stops stripping that field, this fails.
+    const result = await call('GET', '/api/super-admin/audit-logs', 'super');
+    expect(result.status).toBe(200);
+
+    expect(result.text).not.toContain('Bertta B');
+    expect(result.text).not.toContain('metadata');
+    expect(result.text).not.toContain('childName');
+
+    const [entry] = JSON.parse(result.text);
+    expect(entry.entityIdHash).toBe('hash:200');
+    // The acting person's id is not returned either, only their role.
+    expect(entry.actorId).toBeUndefined();
+    expect(entry.userRole).toBe('daycareleader');
+  });
+
+  it('the administrator list carries administrator names and emails, and nothing else', async () => {
+    // Pinned rather than asserted clean: super admin creates these accounts, so
+    // seeing them is inherent to the role. What matters is that the shape stops
+    // at administrators and never widens to families or password hashes.
+    const result = await call('GET', '/api/super-admin/admins', 'super');
+    const groups = JSON.parse(result.text);
+
+    expect(groups[0].admins[0]).toEqual({
+      id: expect.any(Number),
+      name: expect.any(String),
+      email: expect.any(String),
+    });
+    expect(result.text).not.toContain('passwordHash');
+    expect(result.text).not.toContain('resetTokenHash');
+    for (const value of FAMILY_DATA) {
+      expect(result.text).not.toContain(value);
+    }
+  });
 });
