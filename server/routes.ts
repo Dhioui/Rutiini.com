@@ -3967,6 +3967,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  /**
+   * A deliberate failure, for checking once that alerts actually arrive.
+   *
+   * Off unless ERROR_REPORTING_TEST_ROUTE is set, because an endpoint that
+   * throws on request is a denial-of-service handle if it is left reachable.
+   * Turn it on in staging, call it once, confirm the email, turn it off.
+   *
+   * The message carries fake personal data on purpose: the alert that arrives
+   * is then also the evidence that scrubbing works, in the real pipeline rather
+   * than in a test.
+   */
+  if (process.env.ERROR_REPORTING_TEST_ROUTE === 'true') {
+    app.get('/api/debug/trigger-error', authenticateToken, async (req: AuthRequest, res: Response) => {
+      const user = req.user!;
+      if (user.role !== 'daycareleader' && user.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      throw new Error(
+        "Deliberate test error. If any of this reaches Sentry, scrubbing is broken: " +
+        "Key (email)=(testi.vanhempi@esimerkki.invalid) already exists, " +
+        "child 'Testi Testilainen', hetu 010190-123A, phone 0401234567",
+      );
+    });
+  }
+
   const httpServer = createServer(app);
 
   return httpServer;

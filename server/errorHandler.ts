@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
+import { reportError } from "./errorReporting";
 
 /**
  * Last-resort handler for anything a route did not answer itself.
@@ -23,6 +24,24 @@ export function createErrorHandler(log: (message: string) => void) {
     const status = err?.status || err?.statusCode || 500;
 
     log(`${req.method} ${req.path} failed with ${status}: ${err?.stack || err}`);
+
+    // Reported before the response is written, so a 500 raised after a route had
+    // already started answering is still seen. Only server faults: a 403 or a 404
+    // is the application working, and alerting on those would train whoever reads
+    // the alerts to ignore them.
+    //
+    // Not awaited. Reporting must not add latency to a request that has already
+    // gone wrong, and must not be able to turn a handled failure into a crash.
+    if (status >= 500) {
+      const user = (req as Request & { user?: { role?: string; daycareId?: number | null } }).user;
+      reportError(err, {
+        method: req.method,
+        path: req.path,
+        status,
+        role: user?.role,
+        daycareId: user?.daycareId,
+      });
+    }
 
     // A route that already began answering owns the response; writing more would
     // corrupt the body it had started sending.

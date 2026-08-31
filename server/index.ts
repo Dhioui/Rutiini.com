@@ -11,6 +11,7 @@ import { withAdvisoryLock, LOCK_KEYS } from "./db";
 import { assertEmailConfigured } from "./email";
 import { corsOrigin } from "./cors";
 import { createErrorHandler } from "./errorHandler";
+import { errorReportingEnabled } from "./errorReporting";
 import {
   apiLimiter,
   authLimiter,
@@ -117,6 +118,12 @@ app.use((req, res, next) => {
   const server = await registerRoutes(app);
 
   app.use(createErrorHandler(log));
+
+  log(
+    errorReportingEnabled()
+      ? '[Errors] Reporting to Sentry is on'
+      : '[Errors] Reporting is off (SENTRY_DSN unset) -- failures are logged here only',
+  );
 
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
