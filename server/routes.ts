@@ -3336,6 +3336,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const requestId = parseInt(req.params.id);
+      // A non-numeric id used to reach the database as NaN, where Postgres rejects
+      // it and the route answered 500. Since 5xx now raises an alert, a mistyped
+      // link would have paged someone. It is a bad request, so it says so.
+      if (Number.isNaN(requestId)) {
+        return res.status(400).json({ error: 'Invalid request' });
+      }
+
       const { status, adminNote } = req.body;
       
       if (!status || !['approved', 'denied'].includes(status)) {
@@ -3979,7 +3986,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
    * than in a test.
    */
   if (process.env.ERROR_REPORTING_TEST_ROUTE === 'true') {
-    app.get('/api/debug/trigger-error', authenticateToken, async (req: AuthRequest, res: Response) => {
+    // Deliberately not `async`. Express 4 wraps a handler call in try/catch, so a
+    // synchronous throw reaches the error handler and is reported. A rejected
+    // promise is not caught there at all: Node's default is to treat an unhandled
+    // rejection as fatal, so an `async` version of this would take the server down
+    // and report nothing -- the opposite of what a test route is for.
+    app.get('/api/debug/trigger-error', authenticateToken, (req: AuthRequest, res: Response) => {
       const user = req.user!;
       if (user.role !== 'daycareleader' && user.role !== 'super_admin') {
         return res.status(403).json({ error: 'Unauthorized' });
