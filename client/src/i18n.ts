@@ -1,6 +1,7 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import LanguageDetector from 'i18next-browser-languagedetector';
+import { applyDocumentLanguage } from '@/lib/documentLanguage';
 
 const resources = {
   en: {
@@ -4734,6 +4735,12 @@ const resources = {
   }
 };
 
+// Registered before init, so the language the detector restores from localStorage
+// at startup gets exactly the same treatment as one chosen from the menu later.
+// This is the whole point: the direction has to follow the active language, not
+// the act of changing it.
+i18n.on('languageChanged', (language: string) => applyDocumentLanguage(language));
+
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
@@ -4749,5 +4756,10 @@ i18n
       escapeValue: false,
     },
   });
+
+// The event above fires during init, so this is normally a repeat of what it just
+// did. It is kept because the attributes have to be right whether or not that
+// ordering holds, and writing them twice costs nothing.
+applyDocumentLanguage(i18n.language);
 
 export default i18n;

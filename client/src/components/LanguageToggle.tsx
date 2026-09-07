@@ -20,13 +20,12 @@ const languages = [
 export function LanguageToggle() {
   const { i18n } = useTranslation();
 
+  // Only changes the language. `<html lang>` and `<html dir>` follow from
+  // i18next's languageChanged event, wired up in i18n.ts, so they are also right
+  // on a reload -- which is when the saved language is restored without anyone
+  // touching this menu.
   const changeLanguage = (lng: string) => {
     i18n.changeLanguage(lng);
-    if (lng === 'ar') {
-      document.documentElement.dir = 'rtl';
-    } else {
-      document.documentElement.dir = 'ltr';
-    }
   };
 
   const currentLanguage = languages.find(lang => lang.code === i18n.language) || languages[0];
