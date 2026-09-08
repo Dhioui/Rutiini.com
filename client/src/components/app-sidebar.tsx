@@ -194,10 +194,17 @@ export function AppSidebar() {
    *
    * This used to call setOpen(false) for every click, on every screen size. setOpen
    * drives the *desktop* sidebar, so the effect was the opposite of the intent at
-   * both sizes: on a desktop the sidebar slid off-screen after every click -- and
-   * the state is kept in a cookie, so it stayed shut on the next visit too -- while
+   * both sizes: on a desktop the sidebar slid off-screen after every click, while
    * on a phone the drawer, which is a separate Sheet on openMobile, was never
    * dismissed at all and went on covering the page that had just been opened.
+   *
+   * The damage stopped at the reload, though not by design. setOpen writes the
+   * open state into a `sidebar_state` cookie, but nothing anywhere reads that
+   * cookie back: SidebarProvider starts from its `defaultOpen` prop, which is
+   * true and which App.tsx does not override. Upstream this is a Next.js
+   * component and the cookie is read during the server render; there is no server
+   * render here, so the write goes nowhere and the sidebar comes back open on
+   * every visit regardless of how it was left.
    *
    * Deferred by a tick so the click has finished being handled -- and the
    * navigation started -- before the drawer unmounts underneath it.
