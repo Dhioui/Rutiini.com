@@ -1,5 +1,5 @@
 import nodemailer, { type Transporter } from 'nodemailer';
-import { log } from './vite';
+import { log } from './static';
 
 /**
  * Outgoing email.

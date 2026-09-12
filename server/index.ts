@@ -4,7 +4,7 @@ import cors from "cors";
 import compression from "compression";
 import cron from "node-cron";
 import { registerRoutes } from "./routes";
-import { setupVite, serveStatic, log } from "./vite";
+import { serveStatic, log } from "./static";
 import { fetchAndSaveMenu, fetchAndSaveMenuForDaycare } from "./menuScraper";
 import { storage } from "./storage";
 import { withAdvisoryLock, LOCK_KEYS } from "./db";
@@ -129,6 +129,12 @@ app.use((req, res, next) => {
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
   if (app.get("env") === "development") {
+    // Imported here rather than at the top of the file. ./vite pulls in Vite,
+    // vite.config and nanoid, which are devDependencies and are absent from the
+    // runtime image; a static import would be resolved before any of this code
+    // ran, so the check guarding it would never be reached. Kept out of the
+    // production bundle by esbuild's --splitting.
+    const { setupVite } = await import("./vite");
     await setupVite(app, server);
   } else {
     serveStatic(app);

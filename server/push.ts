@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { log } from './vite';
+import { log } from './static';
 
 /**
  * Push notifications to phones, via Firebase Cloud Messaging.
