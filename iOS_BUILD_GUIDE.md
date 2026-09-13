@@ -168,7 +168,7 @@ xcodebuild -exportArchive \
 ### Release Information:
 - **Version Number:** 1.0
 - **Build:** 1
-- **Copyright:** Rutiini Software Oy © 2025
+- **Copyright:** Rutiini Software © 2026
 
 ### App Screenshots (Required):
 Upload 5-7 screenshots showing:

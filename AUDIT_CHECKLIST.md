@@ -24,7 +24,7 @@
 ## COMPANY INFORMATION
 
 ### Legal Entity
-- **Company Name:** Rutiini Software Oy
+- **Company Name:** Rutiini Software
 - **Business ID (Y-tunnus):** 3584077-1
 - **Address:** Turumankatu 2A
 - **Phone:** +358 45 855 9644
@@ -187,7 +187,7 @@
 
 ### Set in Shared Environment
 ```
-RUTIINI_COMPANY_NAME=Rutiini Software Oy
+RUTIINI_COMPANY_NAME=Rutiini Software
 RUTIINI_BUSINESS_ID=3584077-1
 RUTIINI_ADDRESS=Turumankatu 2A
 RUTIINI_PHONE=+358 45 855 9644

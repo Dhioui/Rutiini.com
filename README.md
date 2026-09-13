@@ -288,4 +288,4 @@ ios/        Capacitor iOS project
 
 ## Licence
 
-Proprietary. © Rutiini Software Oy.
+Proprietary. © Rutiini Software.
