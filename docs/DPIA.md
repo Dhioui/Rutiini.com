@@ -3,7 +3,13 @@
 
 **Document Version:** 1.0  
 **Date:** December 4, 2025  
-**Data Controller:** [Municipality Name]  
+**Data Controller:** [Municipality Name] — *placeholder, not filled in*
+
+> **This document is a draft and has not been approved.** The controller is still
+> a placeholder, the approval section below is empty, and the risk assessment does
+> not yet reflect the findings of the September 2026 code audit. Nothing in it
+> should be relied on as evidence that a risk has been assessed or accepted.
+
 **System:** Rutiini Daycare Management Platform  
 **Assessment Period:** 2025-2026  
 
@@ -64,10 +70,25 @@ Rutiini is a multi-tenant daycare management system designed to:
 | Data Category | Retention Period | Legal Requirement |
 |---------------|------------------|-------------------|
 | Audit logs | 12 months | VAHTI compliance |
-| Messages | 24 months | Operational needs |
-| Trip records | 24 months | Liability purposes |
-| Absence records | 12 months | Operational needs |
-| Child records | Duration of enrollment + 5 years | Legal requirement |
+| Messages | 12 months | Operational needs |
+| Trip records | 12 months | Liability purposes |
+| Absence records | 24 months | Operational needs |
+| Care time reservations | 36 months | Reconciling a later billing period |
+| Realised attendance | 36 months | Reconciling a later billing period |
+| Child records | **No automatic end of life** | See the warning below |
+
+> **These are the defaults the code applies, and four of them contradicted what
+> this document previously claimed.** Messages and trips were stated as 24 months
+> and are 12; absences were stated as 12 and are 24; care time was not listed at
+> all. Every period is overridable per deployment through the `RETENTION_*`
+> environment variables, so the values in force are whatever that deployment sets,
+> not what is written here.
+>
+> **Child records, consents, form submissions and contracts have no automatic
+> deletion at all.** The "enrollment + 5 years" line above describes an intention,
+> not a mechanism: nothing in the application ends a child's record when their
+> place ends. Retention for those must be decided per document type and carried
+> out deliberately.
 | User accounts | Duration of relationship | Operational needs |
 
 ---
@@ -77,7 +98,7 @@ Rutiini is a multi-tenant daycare management system designed to:
 ### 2.1 Legal Basis for Processing
 - **GDPR Article 6(1)(c)**: Legal obligation (child welfare regulations)
 - **GDPR Article 6(1)(e)**: Public interest (municipal daycare services)
-- **Finnish Daycare Act (36/1973)**: Documentation requirements
+- **Varhaiskasvatuslaki (540/2018)**: Documentation requirements. This previously cited the Päivähoitolaki 36/1973, which 540/2018 repealed; the retention consequences below must be re-checked against the act that is actually in force.
 - **VAHTI Requirements**: Finnish government IT security standards
 
 ### 2.2 Purpose Limitation

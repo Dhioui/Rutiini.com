@@ -153,7 +153,21 @@ export async function sendPushToUsers(userIds: number[], message: PushMessage): 
   // One request per device: the v1 API has no multicast. Sent together rather than
   // in sequence so announcing a trip to a daycare does not take a round trip per
   // phone.
-  const results = await Promise.allSettled(tokens.map(async (device) => {
+  //
+  // iOS tokens are excluded. Capacitor's push plugin hands back whatever the
+  // platform issued: on Android that is an FCM token, on iOS it is an APNs token,
+  // and FCM cannot deliver to an APNs token -- it is not an FCM address. Every
+  // iOS device was therefore being sent to and silently failing, which looked
+  // from here like a working feature. Making iOS work needs Firebase Messaging in
+  // the iOS project so it issues an FCM token, or a separate APNs sender; until
+  // one of those exists, this says so once per batch rather than pretending.
+  const deliverable = tokens.filter((device) => device.platform !== 'ios');
+  const skipped = tokens.length - deliverable.length;
+  if (skipped > 0) {
+    log(`[Push] Skipped ${skipped} iOS device(s): APNs tokens cannot be delivered through FCM`, 'push');
+  }
+
+  const results = await Promise.allSettled(deliverable.map(async (device) => {
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {

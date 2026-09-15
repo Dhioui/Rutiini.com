@@ -2,6 +2,7 @@ import { createContext, useContext, useState, type ReactNode } from 'react';
 import { useLocation } from 'wouter';
 import type { User } from '@shared/schema';
 import { apiUrl } from '@/lib/api';
+import { queryClient } from '@/lib/queryClient';
 import {
   registerPushNotifications,
   unregisterPushNotifications,
@@ -60,6 +61,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [, setLocation] = useLocation();
 
   const login = (user: AuthUser, token: string) => {
+    // Nothing from a previous session may survive into this one. The cache is
+    // shared, its keys are paths like '/api/children' with no user or daycare in
+    // them, and staleTime is Infinity -- so without this, signing in as someone
+    // else on the same open app showed the previous person's data, from memory,
+    // with no request made and therefore no server-side permission check to fail.
+    // A daycare's shared tablet is exactly where that happens.
+    queryClient.clear();
+
     setUser(user);
     setToken(token);
     localStorage.setItem('user', JSON.stringify(user));
@@ -73,6 +82,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
+    // Cancel first, then clear at the end. A query still in flight when the user
+    // signs out would otherwise land in the cache *after* it was emptied and be
+    // waiting there for whoever signs in next.
+    await queryClient.cancelQueries();
+
     // Stop notifications for this device first: removing the push token is an
     // authenticated request, so it has to happen while the session is still valid.
     // Otherwise the token stays registered to the account that just signed out and
@@ -99,6 +113,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null);
     localStorage.removeItem('user');
     localStorage.removeItem('token');
+    queryClient.clear();
     setLocation('/');
   };
 

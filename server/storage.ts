@@ -64,6 +64,7 @@ import {
   type InsertMealMenu,
   type Form,
   type InsertForm,
+  UpdateForm,
   type FormSubmission,
   type InsertFormSubmission,
   type ChildConsent,
@@ -116,6 +117,7 @@ export interface IStorage {
   getAllChildren(): Promise<Child[]>;
   getChildrenByGuardian(guardianId: number): Promise<Child[]>;
   getChild(id: number): Promise<Child | undefined>;
+  getChildInDaycare(id: number, daycareId: number): Promise<Child | undefined>;
   createChild(child: InsertChild): Promise<Child>;
   updateChild(id: number, daycareId: number, update: UpdateChild): Promise<Child | undefined>;
   deleteChild(id: number): Promise<void>;
@@ -129,7 +131,7 @@ export interface IStorage {
   getEntriesByDateRange(daycareId: number, startDate: Date, endDate: Date): Promise<Entry[]>;
   createEntry(entry: InsertEntry): Promise<Entry>;
   
-  getTrips(daycareId: number, limit?: number, offset?: number): Promise<Trip[]>;
+  getTrips(daycareId: number, limit?: number, offset?: number, fromDate?: string): Promise<Trip[]>;
   getAllTrips(): Promise<Trip[]>;
   getTrip(id: number): Promise<Trip | undefined>;
   createTrip(trip: InsertTrip): Promise<Trip>;
@@ -253,11 +255,11 @@ export interface IStorage {
   getForm(id: number): Promise<Form | undefined>;
   getActiveForms(daycareId: number): Promise<Form[]>;
   createForm(form: InsertForm): Promise<Form>;
-  updateForm(id: number, updates: Partial<InsertForm>): Promise<Form>;
+  updateForm(id: number, daycareId: number, updates: UpdateForm): Promise<Form | undefined>;
   deleteForm(id: number): Promise<void>;
   
   // Form Submissions
-  getFormSubmissions(formId: number): Promise<FormSubmission[]>;
+  getFormSubmissions(formId: number, daycareId: number): Promise<FormSubmission[]>;
   getFormSubmissionsByChild(childId: number): Promise<FormSubmission[]>;
   getFormSubmissionsByUser(userId: number): Promise<FormSubmission[]>;
   getFormSubmission(id: number): Promise<FormSubmission | undefined>;
@@ -571,37 +573,58 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
+  /**
+   * Removes a person, in one transaction, without taking children's records with
+   * them.
+   *
+   * Two separate problems before. Ten tables referencing users were not handled --
+   * teacher assignments, push tokens, deletion requests, forms, form submissions,
+   * consents, contracts, reservation templates, reservations and attendance --
+   * so their foreign keys refused the final delete after earlier steps had already
+   * run. Nothing was transactional, so a failed deletion left the person in place
+   * with their entries, messages and guardian links destroyed.
+   *
+   * The second problem was the design. Deleting a member of staff deleted every
+   * daily entry they had ever written and every absence they had recorded, which
+   * are the daycare's records about children, not the staff member's own data. A
+   * person leaving their job must not erase a child's care history.
+   *
+   * So the two kinds are separated. Rows that belong to the person are deleted.
+   * Rows that are the daycare's record of a child, and merely note who wrote them,
+   * are kept with the author emptied -- the record survives, the identity does
+   * not. That is what those author columns became nullable for.
+   */
   async deleteUser(id: number): Promise<void> {
-    // Delete all foreign key references to this user
-    // 1. Delete guardian relations
-    await this.deleteGuardiansByUserId(id);
-    
-    // 2. Delete entries where user is staff
-    await db.delete(entries).where(eq(entries.staffId, id));
-    
-    // 3. Delete trips created by this user
-    await db.delete(trips).where(eq(trips.createdBy, id));
-    
-    // 4. Delete trip responses from this user
-    await db.delete(tripResponses).where(eq(tripResponses.guardianId, id));
-    
-    // 5. Delete absences reported by this user
-    await db.delete(absences).where(eq(absences.reportedById, id));
-    
-    // 6. Delete messages sent/received by this user
-    await db.delete(messages).where(or(
-      eq(messages.senderId, id),
-      eq(messages.recipientId, id)
-    ));
-    
-    // 7. Delete documents published by this user
-    await db.delete(documents).where(eq(documents.publishedById, id));
-    
-    // 8. Delete notifications for this user
-    await db.delete(notifications).where(eq(notifications.userId, id));
-    
-    // Finally delete the user
-    await db.delete(users).where(eq(users.id, id));
+    await db.transaction(async (tx) => {
+      // The daycare's records about children: keep, anonymise the author.
+      await tx.update(entries).set({ staffId: null }).where(eq(entries.staffId, id));
+      await tx.update(absences).set({ reportedById: null }).where(eq(absences.reportedById, id));
+      await tx.update(documents).set({ publishedById: null }).where(eq(documents.publishedById, id));
+      await tx.update(forms).set({ createdById: null }).where(eq(forms.createdById, id));
+      await tx.update(trips).set({ createdBy: null }).where(eq(trips.createdBy, id));
+      await tx.update(childContracts).set({ createdById: null }).where(eq(childContracts.createdById, id));
+      await tx.update(reservationTemplates).set({ createdById: null }).where(eq(reservationTemplates.createdById, id));
+      await tx.update(attendanceReservations).set({ createdById: null }).where(eq(attendanceReservations.createdById, id));
+      await tx.update(attendanceRecords).set({ checkedInById: null }).where(eq(attendanceRecords.checkedInById, id));
+      await tx.update(attendanceRecords).set({ checkedOutById: null }).where(eq(attendanceRecords.checkedOutById, id));
+      await tx.update(deleteRequests).set({ processedById: null }).where(eq(deleteRequests.processedById, id));
+
+      // The person's own rows.
+      await tx.delete(guardians).where(eq(guardians.userId, id));
+      await tx.delete(teacherGroupAssignments).where(eq(teacherGroupAssignments.userId, id));
+      await tx.delete(pushTokens).where(eq(pushTokens.userId, id));
+      await tx.delete(notifications).where(eq(notifications.userId, id));
+      await tx.delete(sessionTokens).where(eq(sessionTokens.userId, id));
+      await tx.delete(deleteRequests).where(eq(deleteRequests.userId, id));
+      await tx.delete(tripResponses).where(eq(tripResponses.guardianId, id));
+      await tx.delete(formSubmissions).where(eq(formSubmissions.submittedById, id));
+      // A consent is only valid because a particular guardian gave it, so it goes
+      // with them rather than being left standing without its author.
+      await tx.delete(childConsents).where(eq(childConsents.grantedById, id));
+      await tx.delete(messages).where(or(eq(messages.senderId, id), eq(messages.recipientId, id)));
+
+      await tx.delete(users).where(eq(users.id, id));
+    });
   }
 
   async getChildren(daycareId: number, limit: number = LIST_LIMITS.children, offset: number = 0): Promise<Child[]> {
@@ -640,6 +663,23 @@ export class DatabaseStorage implements IStorage {
     return child || undefined;
   }
 
+  /**
+   * A child, but only if they are in the given daycare.
+   *
+   * getChild above answers for any id in any daycare, which is correct for the
+   * places that have already established the boundary themselves and wrong
+   * everywhere else. Anything deciding whether a caller may act on a child should
+   * ask this instead, so the boundary is in the query rather than in a check
+   * somebody has to remember to write.
+   */
+  async getChildInDaycare(id: number, daycareId: number): Promise<Child | undefined> {
+    const [child] = await db
+      .select()
+      .from(children)
+      .where(and(eq(children.id, id), eq(children.daycareId, daycareId)));
+    return child || undefined;
+  }
+
   async createChild(insertChild: InsertChild): Promise<Child> {
     const [child] = await db
       .insert(children)
@@ -657,7 +697,22 @@ export class DatabaseStorage implements IStorage {
     const fields = Object.fromEntries(
       Object.entries(update).filter(([, value]) => value !== undefined),
     );
-    if (Object.keys(fields).length === 0) return this.getChild(id);
+
+    // An update with nothing in it used to fall through to getChild(id), which has
+    // no daycare filter. That turned this route into a read of any child in any
+    // daycare: a leader sent `{}` to a neighbouring daycare's child id and got the
+    // whole row back -- name, date of birth, group, allergies. The route passes
+    // daycareId correctly; this branch simply ignored it.
+    //
+    // The read is now scoped like the write below. The route also rejects an empty
+    // body outright, so both ends are closed rather than one.
+    if (Object.keys(fields).length === 0) {
+      const [existing] = await db
+        .select()
+        .from(children)
+        .where(and(eq(children.id, id), eq(children.daycareId, daycareId)));
+      return existing || undefined;
+    }
 
     const [child] = await db
       .update(children)
@@ -912,27 +967,42 @@ export class DatabaseStorage implements IStorage {
     return result.length;
   }
 
+  /**
+   * Removes a child and everything that is about that child, in one transaction.
+   *
+   * Two things were wrong before. Three tables that reference children were not
+   * handled at all -- child_consents, form_submissions and messages -- so their
+   * foreign keys refused the final delete, and the child row survived while the
+   * guardian links, entries, absences and care time rows around it were already
+   * gone. And because the steps ran outside a transaction, that half-deleted state
+   * was permanent: a guardian could lose their connection to a child whose record
+   * was still there.
+   *
+   * Everything now happens inside one transaction, so it either completes or
+   * leaves the child exactly as they were.
+   *
+   * The message link is emptied rather than deleted. A message is a conversation
+   * between two adults that happens to name a child; removing the child should
+   * remove the reference, not the correspondence.
+   */
   async deleteChild(id: number): Promise<void> {
-    // Delete guardian relations first
-    await this.deleteGuardiansByChildId(id);
-    
-    // Delete related entries
-    await db.delete(entries).where(eq(entries.childId, id));
-    
-    // Delete related trip responses
-    await db.delete(tripResponses).where(eq(tripResponses.childId, id));
-    
-    // Delete related absences
-    await db.delete(absences).where(eq(absences.childId, id));
+    await db.transaction(async (tx) => {
+      await tx.update(messages).set({ childId: null }).where(eq(messages.childId, id));
 
-    // Care time rows reference the child, so they have to go before it does.
-    await db.delete(attendanceRecords).where(eq(attendanceRecords.childId, id));
-    await db.delete(attendanceReservations).where(eq(attendanceReservations.childId, id));
-    await db.delete(reservationTemplates).where(eq(reservationTemplates.childId, id));
-    await db.delete(childContracts).where(eq(childContracts.childId, id));
+      await tx.delete(guardians).where(eq(guardians.childId, id));
+      await tx.delete(entries).where(eq(entries.childId, id));
+      await tx.delete(tripResponses).where(eq(tripResponses.childId, id));
+      await tx.delete(absences).where(eq(absences.childId, id));
+      await tx.delete(childConsents).where(eq(childConsents.childId, id));
+      await tx.delete(formSubmissions).where(eq(formSubmissions.childId, id));
 
-    // Delete the child
-    await db.delete(children).where(eq(children.id, id));
+      await tx.delete(attendanceRecords).where(eq(attendanceRecords.childId, id));
+      await tx.delete(attendanceReservations).where(eq(attendanceReservations.childId, id));
+      await tx.delete(reservationTemplates).where(eq(reservationTemplates.childId, id));
+      await tx.delete(childContracts).where(eq(childContracts.childId, id));
+
+      await tx.delete(children).where(eq(children.id, id));
+    });
   }
 
   async getEntries(daycareId: number, limit: number = LIST_LIMITS.entries, offset: number = 0): Promise<Entry[]> {
@@ -987,11 +1057,29 @@ export class DatabaseStorage implements IStorage {
     return entry;
   }
 
-  async getTrips(daycareId: number, limit: number = LIST_LIMITS.trips, offset: number = 0): Promise<Trip[]> {
+  /**
+   * Trips, optionally only those on or after a date.
+   *
+   * The date filter belongs in the query. The route used to take the first 200
+   * rows ordered oldest first and then drop the past ones in JavaScript, so once a
+   * daycare had 200 trips behind it the upcoming ones fell outside the page and
+   * the list came back empty -- worse the longer the daycare had been using the
+   * product.
+   */
+  async getTrips(
+    daycareId: number,
+    limit: number = LIST_LIMITS.trips,
+    offset: number = 0,
+    fromDate?: string,
+  ): Promise<Trip[]> {
+    const where = fromDate
+      ? and(eq(trips.daycareId, daycareId), gte(trips.date, fromDate))
+      : eq(trips.daycareId, daycareId);
+
     return await db
       .select()
       .from(trips)
-      .where(eq(trips.daycareId, daycareId))
+      .where(where)
       .orderBy(trips.date)
       .limit(limit)
       .offset(offset);
@@ -1984,13 +2072,20 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
   
-  async updateForm(id: number, updates: Partial<InsertForm>): Promise<Form> {
+  /**
+   * Scoped by daycare, and the caller decides the fields rather than the request.
+   *
+   * This took a Partial<InsertForm> and spread it, so whatever the route passed
+   * -- which was req.body -- reached the row, daycareId included. A form could be
+   * moved between daycares by sending one extra key.
+   */
+  async updateForm(id: number, daycareId: number, updates: UpdateForm): Promise<Form | undefined> {
     const [updated] = await db
       .update(forms)
       .set({ ...updates, updatedAt: new Date() })
-      .where(eq(forms.id, id))
+      .where(and(eq(forms.id, id), eq(forms.daycareId, daycareId)))
       .returning();
-    return updated;
+    return updated || undefined;
   }
   
   async deleteForm(id: number): Promise<void> {
@@ -2001,11 +2096,16 @@ export class DatabaseStorage implements IStorage {
   }
   
   // Form Submissions
-  async getFormSubmissions(formId: number): Promise<FormSubmission[]> {
+  /**
+   * Submissions are answers about named children, so they are scoped by daycare
+   * as well as by form. Reading them by formId alone meant a form that had moved
+   * -- or been moved -- carried its history with it.
+   */
+  async getFormSubmissions(formId: number, daycareId: number): Promise<FormSubmission[]> {
     return await db
       .select()
       .from(formSubmissions)
-      .where(eq(formSubmissions.formId, formId))
+      .where(and(eq(formSubmissions.formId, formId), eq(formSubmissions.daycareId, daycareId)))
       .orderBy(desc(formSubmissions.submittedAt));
   }
   
@@ -2206,6 +2306,15 @@ export class DatabaseStorage implements IStorage {
   }
   
   // GDPR Data Export - returns all data for a guardian user
+  /**
+   * Everything the application holds about this guardian and their children.
+   *
+   * Five categories were missing, all of them added after this method was first
+   * written and none of them added to it: consents, care time reservations, the
+   * weekly templates behind them, realised attendance, and contracts. A subject
+   * access request that silently omits five tables is not a complete answer, and
+   * the gap widens every time a feature lands.
+   */
   async getGuardianDataExport(userId: number): Promise<{
     user: Omit<User, 'passwordHash' | 'resetTokenHash'>;
     children: Child[];
@@ -2214,6 +2323,11 @@ export class DatabaseStorage implements IStorage {
     messages: Message[];
     absences: Absence[];
     formSubmissions: FormSubmission[];
+    consents: ChildConsent[];
+    reservations: AttendanceReservation[];
+    reservationTemplates: ReservationTemplate[];
+    attendanceRecords: AttendanceRecord[];
+    contracts: ChildContract[];
   }> {
     // Get user without sensitive fields
     const user = await this.getUser(userId);
@@ -2262,6 +2376,23 @@ export class DatabaseStorage implements IStorage {
           : Promise.resolve([] as Message[]),
         this.getFormSubmissionsByUser(userId),
       ]);
+
+    // The five categories the original export did not know about. Same rule as
+    // above: scoped to this guardian's children, uncapped, because an export that
+    // stops at a page limit is not an export.
+    const byChild = <T>(table: any, order: any): Promise<T[]> =>
+      childIds.length
+        ? db.select().from(table).where(inArray(table.childId, childIds)).orderBy(order)
+        : Promise.resolve([] as T[]);
+
+    const [userConsents, userReservations, userTemplates, userAttendance, userContracts] =
+      await Promise.all([
+        byChild<ChildConsent>(childConsents, desc(childConsents.id)),
+        byChild<AttendanceReservation>(attendanceReservations, desc(attendanceReservations.date)),
+        byChild<ReservationTemplate>(reservationTemplates, desc(reservationTemplates.id)),
+        byChild<AttendanceRecord>(attendanceRecords, desc(attendanceRecords.date)),
+        byChild<ChildContract>(childContracts, desc(childContracts.validFrom)),
+      ]);
     
     return {
       user: safeUser,
@@ -2271,6 +2402,11 @@ export class DatabaseStorage implements IStorage {
       messages: userMessages,
       absences: userAbsences,
       formSubmissions: userFormSubmissions,
+      consents: userConsents,
+      reservations: userReservations,
+      reservationTemplates: userTemplates,
+      attendanceRecords: userAttendance,
+      contracts: userContracts,
     };
   }
   

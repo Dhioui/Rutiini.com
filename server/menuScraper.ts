@@ -1,4 +1,5 @@
 import puppeteer from 'puppeteer';
+import { assertPublicHttpUrl } from './urlSafety';
 import { storage } from './storage';
 import type { InsertMealMenu } from '@shared/schema';
 
@@ -111,13 +112,25 @@ function formatFoodWithDiet(items: FoodItem[]): string {
 async function parseAromiWithPuppeteer(sourceUrl: string): Promise<ParsedMenuItem[]> {
   const items: ParsedMenuItem[] = [];
   let browser = null;
-  
+
+  // Checked again here, not only where it was saved. The address is stored and
+  // reused by the nightly job, DNS can point somewhere else by then, and a
+  // scraper that trusts a stored value is a scraper that fetches whatever was
+  // true at write time.
+  const target = await assertPublicHttpUrl(sourceUrl);
+
   try {
     console.log('[MenuScraper] Launching Puppeteer browser...');
     
     browser = await puppeteer.launch({
       headless: true,
-      executablePath: '/nix/store/zi4f80l169xlmivz8vja8wlphq74qqk0-chromium-125.0.6422.141/bin/chromium',
+      // Was a hardcoded /nix/store path from the machine this was written on. It
+      // does not exist in the Docker image or on any other host, so the scraper
+      // could only ever have run in one place. Puppeteer finds its own bundled
+      // browser when this is unset; PUPPETEER_EXECUTABLE_PATH overrides it.
+      ...(process.env.PUPPETEER_EXECUTABLE_PATH
+        ? { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH }
+        : {}),
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -132,7 +145,21 @@ async function parseAromiWithPuppeteer(sourceUrl: string): Promise<ParsedMenuIte
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
     console.log('[MenuScraper] Navigating to Aromi page:', sourceUrl);
-    await page.goto(sourceUrl, {
+    // Redirects are the way around a check made before navigation, so every
+    // request the page makes is judged on where it actually goes.
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      void (async () => {
+        try {
+          await assertPublicHttpUrl(request.url());
+          await request.continue();
+        } catch {
+          await request.abort();
+        }
+      })();
+    });
+
+    await page.goto(target.toString(), {
       waitUntil: 'networkidle2',
       timeout: 60000,
     });

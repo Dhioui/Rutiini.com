@@ -147,7 +147,7 @@ export const entries = pgTable("entries", {
   type: text("type").notNull(),
   value: text("value").notNull(),
   note: text("note"),
-  staffId: integer("staff_id").notNull().references(() => users.id),
+  staffId: integer("staff_id").references(() => users.id),
   timestamp: timestamp("timestamp").notNull().defaultNow(),
 }, (table) => [
   index("entries_child_id_timestamp_idx").on(table.childId, table.timestamp),
@@ -162,7 +162,7 @@ export const trips = pgTable("trips", {
   date: date("date").notNull(),
   location: text("location").notNull(),
   cost: integer("cost").notNull().default(0),
-  createdBy: integer("created_by").notNull().references(() => users.id),
+  createdBy: integer("created_by").references(() => users.id),
   daycareId: integer("daycare_id").notNull().references(() => daycares.id),
   groupId: integer("group_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -192,7 +192,7 @@ export const absences = pgTable("absences", {
   type: text("type").notNull(),
   date: date("date").notNull(),
   reason: text("reason"),
-  reportedById: integer("reported_by_id").notNull().references(() => users.id),
+  reportedById: integer("reported_by_id").references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => [
   index("absences_daycare_id_date_idx").on(table.daycareId, table.date),
@@ -228,7 +228,7 @@ export const documents = pgTable("documents", {
   content: text("content").notNull(),
   type: text("type").notNull(),
   fileUrl: text("file_url"),
-  publishedById: integer("published_by_id").notNull().references(() => users.id),
+  publishedById: integer("published_by_id").references(() => users.id),
   publishedAt: timestamp("published_at").notNull().defaultNow(),
 }, (table) => [
   index("documents_daycare_id_published_at_idx").on(table.daycareId, table.publishedAt),
@@ -278,7 +278,7 @@ export const forms = pgTable("forms", {
   fields: jsonb("fields").notNull(), // JSON array of field definitions
   isActive: boolean("is_active").notNull().default(true),
   requiresChildContext: boolean("requires_child_context").notNull().default(true), // If true, submission tied to specific child
-  createdById: integer("created_by_id").notNull().references(() => users.id),
+  createdById: integer("created_by_id").references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => [
@@ -735,6 +735,24 @@ export const insertFormSchema = z.object({
   createdById: z.number().int().positive(),
 });
 
+/**
+ * Editing a form. daycareId and createdById are deliberately absent.
+ *
+ * The route used to hand req.body straight to the storage layer, which spread it
+ * into the update. That let a leader move their own form into another daycare by
+ * putting a different daycareId in the body -- and because submissions are read
+ * by formId, the form carried every previous answer, with the children and
+ * guardians named in them, to staff who were never entitled to see them.
+ */
+export const updateFormSchema = z.object({
+  title: z.string().min(1).optional(),
+  description: z.string().optional(),
+  type: z.enum(['consent', 'survey', 'registration', 'general']).optional(),
+  fields: z.array(formFieldSchema).optional(),
+  isActive: z.boolean().optional(),
+  requiresChildContext: z.boolean().optional(),
+}).strict();
+
 export const insertFormSubmissionSchema = z.object({
   formId: z.number().int().positive(),
   daycareId: z.number().int().positive(),
@@ -867,7 +885,7 @@ export const childContracts = pgTable("child_contracts", {
   monthlyHours: integer("monthly_hours").notNull(),
   validFrom: date("valid_from").notNull(),
   validTo: date("valid_to"), // null = still in force
-  createdById: integer("created_by_id").notNull().references(() => users.id),
+  createdById: integer("created_by_id").references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => [
   index("child_contracts_daycare_id_idx").on(table.daycareId),
@@ -887,7 +905,7 @@ export const reservationTemplates = pgTable("reservation_templates", {
   weekday: integer("weekday").notNull(), // 1 = Monday ... 7 = Sunday, ISO-8601
   startTime: text("start_time").notNull(), // 'HH:MM'
   endTime: text("end_time").notNull(),
-  createdById: integer("created_by_id").notNull().references(() => users.id),
+  createdById: integer("created_by_id").references(() => users.id),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => [
   uniqueIndex("reservation_templates_child_weekday_idx").on(table.childId, table.weekday),
@@ -902,7 +920,7 @@ export const attendanceReservations = pgTable("attendance_reservations", {
   date: date("date").notNull(),
   startTime: text("start_time").notNull(), // 'HH:MM'
   endTime: text("end_time").notNull(),
-  createdById: integer("created_by_id").notNull().references(() => users.id),
+  createdById: integer("created_by_id").references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => [
@@ -925,13 +943,23 @@ export const attendanceRecords = pgTable("attendance_records", {
   date: date("date").notNull(),
   checkInAt: timestamp("check_in_at").notNull(),
   checkOutAt: timestamp("check_out_at"), // null = still present
-  checkedInById: integer("checked_in_by_id").notNull().references(() => users.id),
+  checkedInById: integer("checked_in_by_id").references(() => users.id),
   checkedOutById: integer("checked_out_by_id").references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => [
   index("attendance_records_daycare_id_date_idx").on(table.daycareId, table.date),
   index("attendance_records_child_id_date_idx").on(table.childId, table.date),
   index("attendance_records_created_at_idx").on(table.createdAt),
+  // At most one open stay per child, enforced by the database.
+  //
+  // Check-in reads for an open record and then inserts one, which are two
+  // statements: two staff phones tapping the same child at the door at the same
+  // moment both find nothing and both insert, leaving two open stays and double
+  // the hours for that day. The application check stays -- it gives the friendly
+  // answer -- but the guarantee belongs here, where a race cannot get past it.
+  uniqueIndex("attendance_records_one_open_per_child_idx")
+    .on(table.childId)
+    .where(sql`check_out_at is null`),
 ]);
 
 /** 'HH:MM', 24-hour. Rejects 24:00 and 7:5 so comparisons stay string-safe. */
@@ -1038,6 +1066,7 @@ export type InsertMealMenu = z.infer<typeof insertMealMenuSchema>;
 // Forms system types
 export type Form = typeof forms.$inferSelect;
 export type InsertForm = z.infer<typeof insertFormSchema>;
+export type UpdateForm = z.infer<typeof updateFormSchema>;
 export type FormField = z.infer<typeof formFieldSchema>;
 export type FormSubmission = typeof formSubmissions.$inferSelect;
 export type InsertFormSubmission = z.infer<typeof insertFormSubmissionSchema>;

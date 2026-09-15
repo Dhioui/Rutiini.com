@@ -6,9 +6,10 @@ import { sendEmail } from "./email";
 import { sendPushToUsers } from "./push";
 import { getCached, setCache, invalidateCache } from "./db";
 import { csvFile } from "./csv";
+import { assertPublicHttpUrl, UnsafeUrlError } from "./urlSafety";
 import fs from "fs";
 import path from "path";
-import { loginSchema, superAdminLoginSchema, insertChildSchema, updateChildSchema, insertReservationSchema, reservationTemplateSchema, applyTemplateSchema, checkInSchema, checkOutSchema, insertChildContractSchema, insertEntrySchema, insertTripSchema, insertTripResponseSchema, createUserSchema, insertDaycareSchema, insertAbsenceSchema, insertMessageSchema, insertDocumentSchema, insertDaycareGroupSchema, changePasswordSchema, insertFormSchema, insertFormSubmissionSchema, insertChildConsentSchema, insertMunicipalitySchema, updateMunicipalitySchema } from "@shared/schema";
+import { loginSchema, superAdminLoginSchema, insertChildSchema, updateChildSchema, insertReservationSchema, reservationTemplateSchema, applyTemplateSchema, checkInSchema, checkOutSchema, insertChildContractSchema, insertEntrySchema, insertTripSchema, insertTripResponseSchema, createUserSchema, insertDaycareSchema, insertAbsenceSchema, insertMessageSchema, insertDocumentSchema, insertDaycareGroupSchema, changePasswordSchema, resetPasswordSchema, insertFormSchema, updateFormSchema, insertFormSubmissionSchema, insertChildConsentSchema, insertMunicipalitySchema, updateMunicipalitySchema } from "@shared/schema";
 import type { User, Child, MealMenu } from "@shared/schema";
 import { getTodaysMenu, fetchAndSaveMenu, fetchAndSaveMenuForDaycare, dietInfoLegend } from "./menuScraper";
 import {
@@ -109,6 +110,15 @@ function attachment(filename: string): string {
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
+/**
+ * What a session on a temporary password is allowed to reach: changing it, and
+ * signing out. Nothing else -- no children, no messages, no lists.
+ */
+const PASSWORD_RESET_ALLOWED_PATHS = new Set([
+  '/api/auth/change-password',
+  '/api/auth/logout',
+]);
+
 async function authenticateToken(req: AuthRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -146,6 +156,19 @@ async function authenticateToken(req: AuthRequest, res: Response, next: NextFunc
     }
 
     req.user = session.user;
+
+    // A session opened with a temporary password may only change that password or
+    // end. passwordNeedsReset previously steered the interface and nothing else,
+    // so anyone who skipped the form -- or called the API directly -- had a full
+    // session on a password an administrator had handed them, which is exactly the
+    // credential the forced change exists to retire.
+    if (session.user.passwordNeedsReset && !PASSWORD_RESET_ALLOWED_PATHS.has(req.path)) {
+      return res.status(403).json({
+        error: 'Password change required',
+        passwordNeedsReset: true,
+      });
+    }
+
     next();
   } catch (error) {
     return res.status(401).json({ error: 'Invalid token' });
@@ -281,36 +304,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Public routes
-  app.get('/privacy-policy', (req: Request, res: Response) => {
-    try {
-      // Try multiple possible paths for reliability in dev and production
-      const possiblePaths = [
-        path.resolve(import.meta.dirname, '../dist/public/privacy-policy.html'),
-        path.resolve(process.cwd(), 'dist/public/privacy-policy.html'),
-        path.join(process.cwd(), 'dist', 'public', 'privacy-policy.html'),
-      ];
-      
-      let filePath: string | null = null;
-      for (const tryPath of possiblePaths) {
-        if (fs.existsSync(tryPath)) {
-          filePath = tryPath;
-          break;
-        }
-      }
-      
-      if (!filePath) {
-        throw new Error('Privacy policy file not found in any expected location');
-      }
-      
-      const content = fs.readFileSync(filePath, 'utf-8');
-      res.set('Content-Type', 'text/html');
-      res.send(content);
-    } catch (error) {
-      console.error('Privacy policy error:', error);
-      res.status(500).send('Privacy policy not found');
-    }
-  });
+  // /privacy-policy and /terms-of-service are public React routes, registered in
+  // App.tsx without an auth wrapper, and the static handler falls through to
+  // index.html so both work on a direct visit and on reload.
+  //
+  // There used to be a handler here that searched three paths for a
+  // privacy-policy.html. No such file exists in the sources or in the build, so
+  // it answered 500 "Privacy policy not found" -- to a search engine, to an app
+  // store reviewer following the required privacy link, and to anyone who
+  // reloaded the page. Clicking through from inside the application worked,
+  // which is why it survived. Removing it lets the SPA serve the page it already
+  // has.
 
   app.get('/api/daycares/:code', async (req: Request, res: Response) => {
     try {
@@ -652,15 +656,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Password reset with token
   app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
     try {
-      const { token, newPassword } = req.body;
-      
-      if (!token || !newPassword) {
-        return res.status(400).json({ error: 'Token and new password required' });
+      // Same strength rule as every other password path. This used to check only
+      // for eight characters, so the flow used by someone locked out of their
+      // account was the weakest one in the application.
+      const parsed = resetPasswordSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid request' });
       }
-      
-      if (newPassword.length < 8) {
-        return res.status(400).json({ error: 'Password must be at least 8 characters' });
-      }
+      const { token, newPassword } = parsed.data;
       
       // Hash the provided token to compare with stored hash
       const tokenHash = hashSessionToken(token);
@@ -795,6 +798,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
 
       const validatedData = updateChildSchema.parse(req.body);
+
+      // An update that changes nothing is not a read. Allowing it made this route
+      // answer with a child's whole record for any id, which is a different
+      // operation with a different permission -- and there is no GET for a single
+      // child precisely because that was never meant to exist.
+      const present = Object.values(validatedData).filter((v) => v !== undefined);
+      if (present.length === 0) {
+        return res.status(400).json({ error: 'No fields to update' });
+      }
 
       if (user.role === 'staff') {
         const administrative = Object.keys(validatedData).filter(
@@ -971,9 +983,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Also to their phones. Deliberately not awaited into the response: a
       // notification that cannot be delivered must not fail the entry that was
       // just saved, and sendPushToUsers never throws.
+      // Deliberately says nothing. A push travels through Google's service and
+      // lands on a lock screen, where it is read by whoever is holding the phone
+      // and whoever is standing next to them. The child's name and what was
+      // written about them stay inside the application, behind a sign-in; the
+      // notification only says there is something to look at. The data payload
+      // still routes the tap to the right screen.
       void sendPushToUsers(guardians.map((g) => g.id), {
-        title: child.name,
-        body: value,
+        title: 'Rutiini',
+        body: 'Uusi merkintä päiväkodista',
         data: { type: 'entry', entryId: String(entry.id), childId: String(child.id) },
       });
       
@@ -997,6 +1015,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const { limit: tripLimit, offset: tripOffset } = readPagination(req, LIST_LIMITS.trips);
+      const fromDate = today.toISOString().slice(0, 10);
 
       let trips;
       if (user.role === 'guardian') {
@@ -1006,20 +1025,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
         
         if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
-        trips = await storage.getTrips(user.daycareId, tripLimit, tripOffset);
+        trips = await storage.getTrips(user.daycareId, tripLimit, tripOffset, fromDate);
       } else {
         if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
-        trips = await storage.getTrips(user.daycareId, tripLimit, tripOffset);
+        trips = await storage.getTrips(user.daycareId, tripLimit, tripOffset, fromDate);
       }
-      
-      // Filter to show only current and future trips
-      const filteredTrips = trips.filter(trip => {
-        const tripDate = new Date(trip.date);
-        tripDate.setHours(0, 0, 0, 0);
-        return tripDate >= today;
-      });
-      
-      res.json(filteredTrips);
+
+      // Already filtered by the query, so the page holds upcoming trips rather
+      // than whatever survives a filter applied after the limit.
+      res.json(trips);
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch trips' });
     }
@@ -1914,7 +1928,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const headers = ['Päivämäärä', 'Aika', 'Lapsi', 'Tyyppi', 'Sisältö', 'Merkinnyt'];
       const rows = entries.map((entry) => {
         const child = childMap.get(entry.childId);
-        const entryStaff = staffMap.get(entry.staffId);
+        // Null once the author's account is removed: the entry is the daycare's
+        // record of the child and stays, the person's identity does not.
+        const entryStaff = entry.staffId === null ? undefined : staffMap.get(entry.staffId);
         const timestamp = new Date(entry.timestamp);
         return [
           timestamp.toLocaleDateString('fi-FI'),
@@ -1963,7 +1979,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const headers = ['Päivämäärä', 'Lapsi', 'Tyyppi', 'Syy', 'Ilmoittaja'];
       const rows = absences.map((absence) => {
         const child = childMap.get(absence.childId);
-        const reporter = reporterMap.get(absence.reportedById);
+        const reporter = absence.reportedById === null ? undefined : reporterMap.get(absence.reportedById);
         return [
           new Date(absence.date).toLocaleDateString('fi-FI'),
           child?.name || '',
@@ -2114,7 +2130,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const enrichedAbsences = await Promise.all(
         absences.map(async (absence) => {
           const child = await storage.getChild(absence.childId);
-          const reporter = await storage.getUser(absence.reportedById);
+          const reporter = absence.reportedById === null ? undefined : await storage.getUser(absence.reportedById);
           
           return {
             ...absence,
@@ -2197,9 +2213,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }))
       );
 
+      // The type alone is health data -- "sickness" beside a child's name on a lock
+      // screen says why they are away. Neither travels.
       void sendPushToUsers(staff.map((s) => s.id), {
-        title: child.name,
-        body: `${validatedData.type} · ${validatedData.date}`,
+        title: 'Rutiini',
+        body: 'Uusi poissaoloilmoitus',
         data: { type: 'absence', absenceId: String(absence.id) },
       });
       
@@ -2309,6 +2327,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: 'Unauthorized' });
       }
       
+      // Any attached child must be in the sender's own daycare, whoever is
+      // sending. Only the guardian branch below used to check anything, so staff
+      // and leaders could attach a child from another daycare -- and the read path
+      // looks the child up by id alone and puts their name in the response.
+      if (validatedData.childId) {
+        const attached = await storage.getChildInDaycare(validatedData.childId, user.daycareId);
+        if (!attached) {
+          return res.status(403).json({ error: 'Unauthorized' });
+        }
+      }
+
       // Guardians can only message staff/admin about their children
       if (user.role === 'guardian') {
         if (!validatedData.childId) {
@@ -2338,9 +2367,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         relatedId: message.id,
       });
 
+      // The first 120 characters of a message between a guardian and a daycare can
+      // be anything at all, and the sender's name identifies both ends of it.
       void sendPushToUsers([validatedData.recipientId], {
-        title: user.name,
-        body: validatedData.content.slice(0, 120),
+        title: 'Rutiini',
+        body: 'Uusi viesti',
         data: { type: 'message', messageId: String(message.id) },
       });
       
@@ -2587,7 +2618,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: 'Unauthorized' });
       }
       
-      const updated = await storage.updateForm(parseInt(id), req.body);
+      // Validated against an allowlist rather than passed through: daycareId and
+      // createdById are not editable, and .strict() rejects anything else outright
+      // instead of silently ignoring it.
+      const validatedData = updateFormSchema.parse(req.body);
+
+      const updated = await storage.updateForm(parseInt(id), form.daycareId, validatedData);
+      if (!updated) return res.status(404).json({ error: 'Form not found' });
+
       await logAudit(user.id, user.role, user.daycareId, 'UPDATE', 'form', form.id);
       res.json(updated);
     } catch (error) {
@@ -2651,7 +2689,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: 'Unauthorized' });
       }
       
-      const submissions = await storage.getFormSubmissions(parseInt(id));
+      const submissions = await storage.getFormSubmissions(parseInt(id), form.daycareId);
       
       // Enrich with user and child names
       const enrichedSubmissions = await Promise.all(
@@ -2724,12 +2762,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(400).json({ error: 'Form already submitted' });
         }
       }
-      
+
+      // A form that does not ask about a child does not get to carry one. The
+      // submitted childId used to pass through unchecked on this branch, so a
+      // guardian could attach any child -- including one in another daycare --
+      // and the read path then looked that child up and returned their name.
+      const attachedChildId = form.requiresChildContext ? childId : null;
+
       const validatedData = insertFormSubmissionSchema.parse({
         formId: parseInt(id),
         daycareId: user.daycareId,
         submittedById: user.id,
-        childId: childId || null,
+        childId: attachedChildId || null,
         responses,
       });
       
@@ -3159,7 +3203,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!user.daycareId) return res.status(403).json({ error: 'Unauthorized' });
       
       const { municipality, menuSourceType, menuSourceUrl } = req.body;
-      
+
+      // Refused here as well as at fetch time, so a bad address is rejected while
+      // the person who typed it is still looking at the form, rather than failing
+      // silently in the nightly job.
+      if (menuSourceUrl) {
+        try {
+          await assertPublicHttpUrl(String(menuSourceUrl));
+        } catch (urlError) {
+          return res.status(400).json({
+            error: urlError instanceof UnsafeUrlError ? urlError.message : 'Invalid menu source URL',
+          });
+        }
+      }
+
       const daycare = await storage.updateDaycareMenuSettings(user.daycareId, {
         municipality,
         menuSourceType,
@@ -3356,9 +3413,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const updated = await storage.updateDeleteRequestStatus(requestId, status, user.id, adminNote);
-      
       await logAudit(user.id, user.role, user.daycareId, 'UPDATE', 'delete_request', requestId, { status });
-      
+
+      // Approving used to be the whole operation: it set a status, a handler and a
+      // timestamp, and deleted nothing. The person was told their data would be
+      // removed, the administrator saw the request marked approved, and the account
+      // and its data stayed exactly where they were. Nothing in the application
+      // ever carried the approval out, and nothing showed that it had not been.
+      //
+      // Approval now performs the deletion. If it throws, the status stays
+      // "approved" and the caller is told it did not complete, so an unfinished
+      // deletion is visible rather than silently assumed done.
+      if (status === 'approved') {
+        try {
+          await storage.deleteUser(existingRequest.userId);
+        } catch (deletionError) {
+          console.error('Approved deletion did not complete:', deletionError);
+          return res.status(500).json({
+            error: 'Request approved but the data was not deleted. The request remains open.',
+            status: 'approved',
+            deleted: false,
+          });
+        }
+
+        // deleteUser removes the requester's own rows, and the deletion request is
+        // one of them -- it is their personal data too. So completion cannot be
+        // recorded on the request itself; it is recorded here, where the audit log
+        // keeps the entity identifier hashed.
+        await logAudit(user.id, user.role, user.daycareId, 'DELETE', 'user_data', existingRequest.userId);
+
+        return res.json({ status: 'completed', deleted: true });
+      }
+
       res.json(updated);
     } catch (error) {
       console.error('Error updating delete request:', error);
@@ -3779,13 +3865,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (open) return res.json(open);
 
       const at = validatedData.at ? new Date(validatedData.at) : new Date();
-      const record = await storage.createAttendanceCheckIn(
-        validatedData.childId,
-        user.daycareId!,
-        zonedDate(at),
-        at,
-        user.id,
-      );
+
+      let record;
+      try {
+        record = await storage.createAttendanceCheckIn(
+          validatedData.childId,
+          user.daycareId!,
+          zonedDate(at),
+          at,
+          user.id,
+        );
+      } catch (insertError) {
+        // The database now allows only one open stay per child. Two phones tapping
+        // the same child at the same moment both get past the check above, and one
+        // of them lands here. That is not an error worth showing anyone: the child
+        // is checked in, which is what the person wanted.
+        const raced = await storage.getOpenAttendanceRecord(validatedData.childId, user.daycareId!);
+        if (raced) return res.json(raced);
+        throw insertError;
+      }
 
       await logAudit(user.id, user.role, user.daycareId!, 'CREATE', 'attendance', record.id);
       res.json(record);
